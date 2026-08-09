@@ -103,7 +103,3 @@ bun run dev
 cd apps/websocket
 bun run dev
 ```
-
-## License
-
-TBD
