@@ -9,6 +9,7 @@ import {
 } from "bun:test";
 import { prismaMock } from "../test-utils/prismaMock";
 import type { MockUser } from "../test-utils/prismaMock";
+import { tokenCookieFrom, startTestServer, makeHttp } from "../test-utils/http";
 
 mock.module("@repo/db/db", () => ({ prisma: prismaMock.prisma }));
 mock.module("bcryptjs", () => ({
@@ -22,15 +23,13 @@ mock.module("bcryptjs", () => ({
 
 process.env.JWT_SECRET = "test-secret";
 
-let app: any;
 let server: any;
-let baseUrl: string;
+let http: ReturnType<typeof makeHttp>;
 
 beforeAll(async () => {
-    ({ app } = await import("../../index"));
-    server = app.listen(0);
-    await new Promise<void>((resolve) => server.once("listening", resolve));
-    baseUrl = `http://localhost:${(server.address() as any).port}`;
+    const started = await startTestServer();
+    server = started.server;
+    http = makeHttp(started.baseUrl);
 });
 
 afterAll(() => {
@@ -52,31 +51,9 @@ const seedUser = (overrides: Partial<MockUser> = {}): MockUser =>
         ...overrides,
     });
 
-const post = (path: string, body: unknown, cookie?: string | null) =>
-    fetch(`${baseUrl}${path}`, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            ...(cookie ? { Cookie: cookie } : {}),
-        },
-        body: JSON.stringify(body),
-    });
-
-const get = (path: string, cookie?: string | null) =>
-    fetch(`${baseUrl}${path}`, {
-        headers: cookie ? { Cookie: cookie } : {},
-    });
-
-const tokenCookieFrom = (res: Response): string | null => {
-    const token = res.headers
-        .getSetCookie()
-        .find((c) => c.startsWith("token="));
-    return token?.split(";")[0] ?? null;
-};
-
 describe("POST /api/v1/auth/signup", () => {
     test("creates a user and sets an httpOnly cookie", async () => {
-        const res = await post("/api/v1/auth/signup", {
+        const res = await http.post("/api/v1/auth/signup", {
             email: "new@example.com",
             password: "password123",
         });
@@ -93,7 +70,7 @@ describe("POST /api/v1/auth/signup", () => {
     });
 
     test("normalizes the email to lowercase", async () => {
-        const res = await post("/api/v1/auth/signup", {
+        const res = await http.post("/api/v1/auth/signup", {
             email: "  New@Example.COM  ",
             password: "password123",
         });
@@ -103,7 +80,7 @@ describe("POST /api/v1/auth/signup", () => {
     });
 
     test("rejects an invalid email", async () => {
-        const res = await post("/api/v1/auth/signup", {
+        const res = await http.post("/api/v1/auth/signup", {
             email: "not-an-email",
             password: "password123",
         });
@@ -111,7 +88,7 @@ describe("POST /api/v1/auth/signup", () => {
     });
 
     test("rejects a password shorter than 5 chars", async () => {
-        const res = await post("/api/v1/auth/signup", {
+        const res = await http.post("/api/v1/auth/signup", {
             email: "new@example.com",
             password: "1234",
         });
@@ -119,9 +96,9 @@ describe("POST /api/v1/auth/signup", () => {
     });
 
     test("rejects a duplicate email", async () => {
-        prismaMock.reset([seedUser()]);
+        prismaMock.reset({ users: [seedUser()] });
 
-        const res = await post("/api/v1/auth/signup", {
+        const res = await http.post("/api/v1/auth/signup", {
             email: "user@example.com",
             password: "password123",
         });
@@ -130,9 +107,9 @@ describe("POST /api/v1/auth/signup", () => {
     });
 
     test("rejects a duplicate email case-insensitively", async () => {
-        prismaMock.reset([seedUser({ email: "Foo@Bar.com" })]);
+        prismaMock.reset({ users: [seedUser({ email: "Foo@Bar.com" })] });
 
-        const res = await post("/api/v1/auth/signup", {
+        const res = await http.post("/api/v1/auth/signup", {
             email: "foo@bar.com",
             password: "password123",
         });
@@ -143,9 +120,9 @@ describe("POST /api/v1/auth/signup", () => {
 
 describe("POST /api/v1/auth/signin", () => {
     test("signs in and sets an httpOnly cookie", async () => {
-        prismaMock.reset([seedUser()]);
+        prismaMock.reset({ users: [seedUser()] });
 
-        const res = await post("/api/v1/auth/signin", {
+        const res = await http.post("/api/v1/auth/signin", {
             email: "user@example.com",
             password: "hashed-password",
         });
@@ -162,9 +139,9 @@ describe("POST /api/v1/auth/signin", () => {
     });
 
     test("signs in with differently-cased email", async () => {
-        prismaMock.reset([seedUser({ email: "User@Example.com" })]);
+        prismaMock.reset({ users: [seedUser({ email: "User@Example.com" })] });
 
-        const res = await post("/api/v1/auth/signin", {
+        const res = await http.post("/api/v1/auth/signin", {
             email: "USER@example.com",
             password: "hashed-password",
         });
@@ -173,9 +150,9 @@ describe("POST /api/v1/auth/signin", () => {
     });
 
     test("rejects a wrong password", async () => {
-        prismaMock.reset([seedUser()]);
+        prismaMock.reset({ users: [seedUser()] });
 
-        const res = await post("/api/v1/auth/signin", {
+        const res = await http.post("/api/v1/auth/signin", {
             email: "user@example.com",
             password: "wrong-password",
         });
@@ -186,7 +163,7 @@ describe("POST /api/v1/auth/signin", () => {
     });
 
     test("rejects an unknown email", async () => {
-        const res = await post("/api/v1/auth/signin", {
+        const res = await http.post("/api/v1/auth/signin", {
             email: "nobody@example.com",
             password: "hashed-password",
         });
@@ -195,12 +172,12 @@ describe("POST /api/v1/auth/signin", () => {
     });
 
     test("does not reveal whether email or password was wrong", async () => {
-        prismaMock.reset([seedUser()]);
-        const unknown = await post("/api/v1/auth/signin", {
+        prismaMock.reset({ users: [seedUser()] });
+        const unknown = await http.post("/api/v1/auth/signin", {
             email: "nobody@example.com",
             password: "whatever",
         });
-        const known = await post("/api/v1/auth/signin", {
+        const known = await http.post("/api/v1/auth/signin", {
             email: "user@example.com",
             password: "wrong-password",
         });
@@ -213,23 +190,23 @@ describe("POST /api/v1/auth/signin", () => {
 
 describe("GET /api/v1/auth/me", () => {
     test("returns 401 without a token", async () => {
-        const res = await get("/api/v1/auth/me");
+        const res = await http.get("/api/v1/auth/me");
         expect(res.status).toBe(401);
     });
 
     test("returns 401 with an invalid token", async () => {
-        const res = await get("/api/v1/auth/me", "token=not-a-real-token");
+        const res = await http.get("/api/v1/auth/me", "token=not-a-real-token");
         expect(res.status).toBe(401);
     });
 
     test("returns the user for a valid token", async () => {
-        const signup = await post("/api/v1/auth/signup", {
+        const signup = await http.post("/api/v1/auth/signup", {
             email: "user@example.com",
             password: "hashed-password",
         });
         const cookie = tokenCookieFrom(signup);
 
-        const res = await get("/api/v1/auth/me", cookie);
+        const res = await http.get("/api/v1/auth/me", cookie);
 
         expect(res.status).toBe(200);
         const body: any = await res.json();
@@ -243,7 +220,7 @@ describe("GET /api/v1/auth/me", () => {
 
 describe("POST /api/v1/auth/logout", () => {
     test("clears the auth cookie", async () => {
-        const res = await post("/api/v1/auth/logout", {});
+        const res = await http.post("/api/v1/auth/logout", {});
 
         expect(res.status).toBe(200);
         const setCookie = res.headers.get("set-cookie") ?? "";
