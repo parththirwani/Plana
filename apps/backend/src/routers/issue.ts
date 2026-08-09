@@ -8,6 +8,7 @@ import {
     setAssignees,
 } from "../schema/issue";
 import { reindex } from "../lib/reindex";
+import { notifyBoard } from "../lib/notify";
 import { getMembership, isAuthorized } from "./organization";
 
 const router = Router();
@@ -31,7 +32,7 @@ export const shapeIssue = (issue: any) => ({
 const issueWithAssignees = async (id: string) =>
     prisma.issue.findUnique({ where: { id }, include: { assignees: true } });
 
-const boardForIssue = async (issue: { sectionId: string }) => {
+export const boardForIssue = async (issue: { sectionId: string }) => {
     const section = await prisma.section.findUnique({
         where: { id: issue.sectionId },
     });
@@ -91,6 +92,10 @@ router.post(
             });
 
             const created = await issueWithAssignees(issue.id);
+
+            void notifyBoard(board.id, "issue.created", req.user.userId, {
+                issue: shapeIssue(created),
+            });
 
             return res.status(201).json({
                 message: "Issue created successfully",
@@ -154,6 +159,10 @@ router.patch(
 
             const updated = await issueWithAssignees(issue.id);
 
+            void notifyBoard(board.id, "issue.updated", req.user.userId, {
+                issue: shapeIssue(updated),
+            });
+
             return res.status(200).json({
                 message: "Issue updated successfully",
                 issue: shapeIssue(updated),
@@ -212,6 +221,10 @@ router.delete(
                     })
                 )
             );
+
+            void notifyBoard(board.id, "issue.deleted", req.user.userId, {
+                id: issue.id,
+            });
 
             return res.status(200).json({
                 message: "Issue deleted successfully",
@@ -315,6 +328,10 @@ router.post(
 
             const updated = await issueWithAssignees(issue.id);
 
+            void notifyBoard(board.id, "issue.moved", req.user.userId, {
+                issue: shapeIssue(updated),
+            });
+
             return res.status(200).json({
                 message: "Issue moved successfully",
                 issue: shapeIssue(updated),
@@ -384,6 +401,10 @@ router.put(
             });
 
             const updated = await issueWithAssignees(issue.id);
+
+            void notifyBoard(board.id, "issue.assignees", req.user.userId, {
+                issue: shapeIssue(updated),
+            });
 
             return res.status(200).json({
                 message: "Assignees updated successfully",

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { reindex, moveTo } from "./reindex";
+import { reindex, moveTo } from "../lib/reindex";
 
 describe("reindex", () => {
     test("closes gaps and normalizes order", () => {

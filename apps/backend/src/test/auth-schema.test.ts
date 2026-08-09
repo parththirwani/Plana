@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { UserSchema, normalizeEmail } from "./auth";
+import { UserSchema, normalizeEmail } from "../schema/auth";
 
 describe("UserSchema", () => {
     test("accepts a valid email and password", () => {

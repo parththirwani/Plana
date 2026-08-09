@@ -8,6 +8,7 @@ import {
     updateSection,
 } from "../schema/board";
 import { reindex, moveTo } from "../lib/reindex";
+import { notifyBoard } from "../lib/notify";
 import { getMembership, isAuthorized } from "./organization";
 import { shapeIssue } from "./issue";
 
@@ -55,6 +56,10 @@ router.post(
 
             const board = await prisma.board.create({
                 data: { ...parsedBody.data, organizationId },
+            });
+
+            void notifyBoard(board.id, "board.created", req.user.userId, {
+                board,
             });
 
             return res.status(201).json({
@@ -203,6 +208,10 @@ router.put(
                 },
             });
 
+            void notifyBoard(board.id, "board.updated", req.user.userId, {
+                board: updated,
+            });
+
             return res.status(200).json({
                 message: "Board updated successfully",
                 board: updated,
@@ -239,6 +248,10 @@ router.delete(
             }
 
             await prisma.board.delete({ where: { id: board.id } });
+
+            void notifyBoard(board.id, "board.deleted", req.user.userId, {
+                id: board.id,
+            });
 
             return res.status(200).json({
                 message: "Board deleted successfully",
@@ -287,6 +300,10 @@ router.post(
 
             const section = await prisma.section.create({
                 data: { ...parsedBody.data, order, boardId: board.id },
+            });
+
+            void notifyBoard(board.id, "section.created", req.user.userId, {
+                section,
             });
 
             return res.status(201).json({
@@ -367,6 +384,10 @@ router.patch(
                 where: { id: section.id },
             });
 
+            void notifyBoard(board.id, "section.updated", req.user.userId, {
+                section: updated,
+            });
+
             return res.status(200).json({
                 message: "Section updated successfully",
                 section: updated,
@@ -420,6 +441,10 @@ router.delete(
                     })
                 )
             );
+
+            void notifyBoard(board.id, "section.deleted", req.user.userId, {
+                id: section.id,
+            });
 
             return res.status(200).json({
                 message: "Section deleted successfully",

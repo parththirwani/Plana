@@ -11,6 +11,10 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@repo/db": "workspace:*"
+    "@repo/db": "workspace:*",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/pg": "^8.21.0",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.0"
   }
 }

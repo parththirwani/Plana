@@ -47,6 +47,15 @@ export type MockIssue = {
     assigneeIds: string[];
 };
 
+export type MockComment = {
+    id: string;
+    content: string;
+    issueId: string;
+    authorId: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
 export type MockSeed = {
     users?: MockUser[];
     organizations?: MockOrg[];
@@ -54,6 +63,7 @@ export type MockSeed = {
     boards?: MockBoard[];
     sections?: MockSection[];
     issues?: MockIssue[];
+    comments?: MockComment[];
 };
 
 const createPrismaMock = () => {
@@ -63,6 +73,7 @@ const createPrismaMock = () => {
     let boards: MockBoard[] = [];
     let sections: MockSection[] = [];
     let issues: MockIssue[] = [];
+    let comments: MockComment[] = [];
     let idSeq = 0;
     const allIds = () =>
         [
@@ -72,6 +83,7 @@ const createPrismaMock = () => {
             ...boards,
             ...sections,
             ...issues,
+            ...comments,
         ].map((e: any) => e.id);
     const nextId = (prefix: string) => {
         let id: string;
@@ -94,6 +106,11 @@ const createPrismaMock = () => {
         assignees: issue.assigneeIds
             .map((id) => users.find((u) => u.id === id))
             .filter(Boolean),
+    });
+
+    const withAuthor = (comment: MockComment) => ({
+        ...comment,
+        author: users.find((u) => u.id === comment.authorId) ?? null,
     });
 
     const prisma = {
@@ -356,7 +373,63 @@ const createPrismaMock = () => {
             delete: async ({ where }: { where: any }) => {
                 const issue = issues.find((i) => i.id === where.id)!;
                 issues = issues.filter((i) => i.id !== where.id);
+                comments = comments.filter((c) => c.issueId !== where.id);
                 return issue;
+            },
+        },
+        comment: {
+            findUnique: async ({
+                where,
+                include,
+            }: {
+                where: any;
+                include?: any;
+            }) => {
+                const comment =
+                    comments.find((c) => c.id === where?.id) ?? null;
+                return comment && include?.author
+                    ? withAuthor(comment)
+                    : comment;
+            },
+            findMany: async ({
+                where,
+                include,
+            }: {
+                where: any;
+                include?: any;
+            }) => {
+                let result = comments.filter((c) =>
+                    matchesWhere(c.issueId, where?.issueId)
+                );
+                if (include?.author) {
+                    result = result.map(withAuthor);
+                }
+                return result;
+            },
+            create: async ({ data }: { data: any }) => {
+                const now = new Date().toISOString();
+                const comment: MockComment = {
+                    id: data.id ?? nextId("com"),
+                    content: data.content,
+                    issueId: data.issueId,
+                    authorId: data.authorId,
+                    createdAt: now,
+                    updatedAt: now,
+                };
+                comments.push(comment);
+                return comment;
+            },
+            update: async ({ where, data }: { where: any; data: any }) => {
+                const comment = comments.find((c) => c.id === where.id)!;
+                Object.assign(comment, data, {
+                    updatedAt: new Date().toISOString(),
+                });
+                return comment;
+            },
+            delete: async ({ where }: { where: any }) => {
+                const comment = comments.find((c) => c.id === where.id)!;
+                comments = comments.filter((c) => c.id !== where.id);
+                return comment;
             },
         },
         $transaction: async (arg: any) =>
@@ -374,6 +447,7 @@ const createPrismaMock = () => {
             boards = seed.boards ?? [];
             sections = seed.sections ?? [];
             issues = seed.issues ?? [];
+            comments = seed.comments ?? [];
             idSeq = 0;
         },
     };

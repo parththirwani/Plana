@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { slugify } from "./slug";
+import { slugify } from "../lib/slug";
 
 describe("slugify", () => {
     test("lowercases and dashes basic names", () => {
