@@ -9,6 +9,7 @@ import {
 } from "../schema/board";
 import { reindex, moveTo } from "../lib/reindex";
 import { getMembership, isAuthorized } from "./organization";
+import { shapeIssue } from "./issue";
 
 const router = Router();
 
@@ -127,9 +128,33 @@ router.get(
                 });
             }
 
+            const sections = await orderedSections(board.id);
+            const issues = await prisma.issue.findMany({
+                where: { sectionId: { in: sections.map((s) => s.id) } },
+                include: { assignees: true },
+            });
+            const bySection = new Map<string, typeof issues>();
+            for (const section of sections) {
+                bySection.set(section.id, []);
+            }
+            for (const issue of issues) {
+                bySection.get(issue.sectionId)?.push(issue);
+            }
+            for (const list of bySection.values()) {
+                list.sort((a, b) => a.order - b.order);
+            }
+
             return res.status(200).json({
                 message: "Board fetched successfully",
-                board: { ...board, sections: await orderedSections(board.id) },
+                board: {
+                    ...board,
+                    sections: sections.map((section) => ({
+                        ...section,
+                        issues: (bySection.get(section.id) ?? []).map(
+                            shapeIssue
+                        ),
+                    })),
+                },
             });
         } catch (error) {
             console.error("Get board error:", error);

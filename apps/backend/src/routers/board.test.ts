@@ -249,6 +249,53 @@ describe("GET /api/v1/boards/:id", () => {
         expect(res.status).toBe(403);
     });
 
+    test("includes ordered issues per section", async () => {
+        prismaMock.reset({
+            users: [
+                makeUser("alice", "alice@example.com"),
+                makeUser("carol", "carol@example.com"),
+            ],
+            organizations: [makeOrg("org_1", "Acme", "acme")],
+            memberships: [
+                makeMembership("mem_alice", "alice", "org_1", "ADMIN"),
+                makeMembership("mem_carol", "carol", "org_1", "MEMBER"),
+            ],
+            boards: [makeBoard("brd_1", "Roadmap")],
+            sections: [makeSection("sec_1", "Todo", 0)],
+            issues: [
+                {
+                    id: "iss_1",
+                    title: "B",
+                    description: null,
+                    order: 1,
+                    priority: "NONE",
+                    dueDate: null,
+                    sectionId: "sec_1",
+                    assigneeIds: ["carol"],
+                },
+                {
+                    id: "iss_2",
+                    title: "A",
+                    description: null,
+                    order: 0,
+                    priority: "HIGH",
+                    dueDate: null,
+                    sectionId: "sec_1",
+                    assigneeIds: [],
+                },
+            ],
+        });
+        const cookie = await http.login("carol@example.com");
+
+        const body: any = await (
+            await http.get("/api/v1/boards/brd_1", cookie)
+        ).json();
+
+        const todo = body.board.sections.find((s: any) => s.id === "sec_1");
+        expect(todo.issues.map((i: any) => i.title)).toEqual(["A", "B"]);
+        expect(todo.issues[1].assignees).toMatchObject([{ id: "carol" }]);
+    });
+
     test("returns 404 for an unknown board", async () => {
         seed();
         const cookie = await http.login("alice@example.com");

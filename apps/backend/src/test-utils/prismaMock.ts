@@ -36,12 +36,24 @@ export type MockSection = {
     boardId: string;
 };
 
+export type MockIssue = {
+    id: string;
+    title: string;
+    description: string | null;
+    order: number;
+    priority: string;
+    dueDate: Date | string | null;
+    sectionId: string;
+    assigneeIds: string[];
+};
+
 export type MockSeed = {
     users?: MockUser[];
     organizations?: MockOrg[];
     memberships?: MockMembership[];
     boards?: MockBoard[];
     sections?: MockSection[];
+    issues?: MockIssue[];
 };
 
 const createPrismaMock = () => {
@@ -50,8 +62,39 @@ const createPrismaMock = () => {
     let memberships: MockMembership[] = [];
     let boards: MockBoard[] = [];
     let sections: MockSection[] = [];
+    let issues: MockIssue[] = [];
     let idSeq = 0;
-    const nextId = (prefix: string) => `${prefix}_${++idSeq}`;
+    const allIds = () =>
+        [
+            ...users,
+            ...organizations,
+            ...memberships,
+            ...boards,
+            ...sections,
+            ...issues,
+        ].map((e: any) => e.id);
+    const nextId = (prefix: string) => {
+        let id: string;
+        do {
+            id = `${prefix}_${++idSeq}`;
+        } while (allIds().includes(id));
+        return id;
+    };
+
+    const matchesWhere = (value: unknown, clause: any) => {
+        if (clause === undefined) return true;
+        if (clause && typeof clause === "object" && "in" in clause) {
+            return (clause as any).in.includes(value);
+        }
+        return value === clause;
+    };
+
+    const withAssignees = (issue: MockIssue) => ({
+        ...issue,
+        assignees: issue.assigneeIds
+            .map((id) => users.find((u) => u.id === id))
+            .filter(Boolean),
+    });
 
     const prisma = {
         user: {
@@ -143,10 +186,9 @@ const createPrismaMock = () => {
                 include?: any;
             }) => {
                 let result = memberships.filter((m) =>
-                    (where?.organizationId === undefined ||
-                        m.organizationId === where.organizationId) &&
-                    (where?.userId === undefined || m.userId === where.userId) &&
-                    (where?.role === undefined || m.role === where.role)
+                    matchesWhere(m.organizationId, where?.organizationId) &&
+                    matchesWhere(m.userId, where?.userId) &&
+                    matchesWhere(m.role, where?.role)
                 );
                 if (include?.organization) {
                     return result.map((m) => ({
@@ -257,6 +299,66 @@ const createPrismaMock = () => {
                 return section;
             },
         },
+        issue: {
+            findUnique: async ({
+                where,
+                include,
+            }: {
+                where: any;
+                include?: any;
+            }) => {
+                const issue =
+                    issues.find((i) => i.id === where?.id) ?? null;
+                return issue && include?.assignees
+                    ? withAssignees(issue)
+                    : issue;
+            },
+            findMany: async ({
+                where,
+                include,
+            }: {
+                where: any;
+                include?: any;
+            }) => {
+                let result = issues.filter((i) =>
+                    matchesWhere(i.sectionId, where?.sectionId)
+                );
+                if (include?.assignees) {
+                    result = result.map(withAssignees);
+                }
+                return result;
+            },
+            create: async ({ data }: { data: any }) => {
+                const issue: MockIssue = {
+                    id: data.id ?? nextId("iss"),
+                    title: data.title,
+                    description: data.description ?? null,
+                    order: data.order ?? 0,
+                    priority: data.priority ?? "NONE",
+                    dueDate: data.dueDate ?? null,
+                    sectionId: data.sectionId,
+                    assigneeIds: [],
+                };
+                issues.push(issue);
+                return issue;
+            },
+            update: async ({ where, data }: { where: any; data: any }) => {
+                const issue = issues.find((i) => i.id === where.id)!;
+                const { assignees, ...rest } = data;
+                Object.assign(issue, rest);
+                if (assignees?.set) {
+                    issue.assigneeIds = assignees.set.map((a: any) =>
+                        typeof a === "string" ? a : a.id
+                    );
+                }
+                return issue;
+            },
+            delete: async ({ where }: { where: any }) => {
+                const issue = issues.find((i) => i.id === where.id)!;
+                issues = issues.filter((i) => i.id !== where.id);
+                return issue;
+            },
+        },
         $transaction: async (arg: any) =>
             Array.isArray(arg)
                 ? await Promise.all(arg.map((op: any) => op))
@@ -271,6 +373,7 @@ const createPrismaMock = () => {
             memberships = seed.memberships ?? [];
             boards = seed.boards ?? [];
             sections = seed.sections ?? [];
+            issues = seed.issues ?? [];
             idSeq = 0;
         },
     };
