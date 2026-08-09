@@ -132,6 +132,11 @@ const createPrismaMock = () => {
             },
             findUnique: async ({ where }: { where: any }) =>
                 users.find((u) => u.id === where?.id) ?? null,
+            update: async ({ where, data }: { where: any; data: any }) => {
+                const user = users.find((u) => u.id === where.id)!;
+                Object.assign(user, data);
+                return user;
+            },
             create: async ({ data }: { data: any }) => {
                 const user: MockUser = {
                     id: data.id ?? nextId("usr"),

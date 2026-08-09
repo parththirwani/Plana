@@ -7,6 +7,7 @@ import organizationRouter from "./src/routers/organization";
 import boardRouter from "./src/routers/board";
 import issueRouter from "./src/routers/issue";
 import commentRouter from "./src/routers/comment";
+import onboardingRouter from "./src/routers/onboarding";
 
 export const app = express();
 
@@ -25,6 +26,7 @@ app.use("/api/v1/organizations", organizationRouter);
 app.use("/api/v1", boardRouter);
 app.use("/api/v1", issueRouter);
 app.use("/api/v1", commentRouter);
+app.use("/api/v1/onboarding", onboardingRouter);
 
 if (process.env.NODE_ENV !== "test") {
     app.listen(8000, () => {
