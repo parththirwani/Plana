@@ -34,14 +34,14 @@ const uniqueSlug = async (name: string, excludeId?: string) => {
     }
 };
 
-const getMembership = (organizationId: string, userId: string) =>
+export const getMembership = (organizationId: string, userId: string) =>
     prisma.membership.findFirst({
         where: { organizationId, userId },
     });
 
 const roleLevel = (role: string) => ROLE_LEVEL[role] ?? 0;
 
-const isAuthorized = (
+export const isAuthorized = (
     membership: { role: string } | null,
     minRole: string
 ) =>

@@ -22,16 +22,34 @@ export type MockMembership = {
     role: string;
 };
 
+export type MockBoard = {
+    id: string;
+    title: string;
+    description: string | null;
+    organizationId: string;
+};
+
+export type MockSection = {
+    id: string;
+    title: string;
+    order: number;
+    boardId: string;
+};
+
 export type MockSeed = {
     users?: MockUser[];
     organizations?: MockOrg[];
     memberships?: MockMembership[];
+    boards?: MockBoard[];
+    sections?: MockSection[];
 };
 
 const createPrismaMock = () => {
     let users: MockUser[] = [];
     let organizations: MockOrg[] = [];
     let memberships: MockMembership[] = [];
+    let boards: MockBoard[] = [];
+    let sections: MockSection[] = [];
     let idSeq = 0;
     const nextId = (prefix: string) => `${prefix}_${++idSeq}`;
 
@@ -179,7 +197,70 @@ const createPrismaMock = () => {
                 return membership;
             },
         },
-        $transaction: async (fn: any) => fn(prisma),
+        board: {
+            findUnique: async ({ where }: { where: any }) =>
+                boards.find((b) => b.id === where?.id) ?? null,
+            findMany: async ({ where }: { where: any }) =>
+                boards.filter(
+                    (b) =>
+                        where?.organizationId === undefined ||
+                        b.organizationId === where.organizationId
+                ),
+            create: async ({ data }: { data: any }) => {
+                const board: MockBoard = {
+                    id: data.id ?? nextId("brd"),
+                    title: data.title,
+                    description: data.description ?? null,
+                    organizationId: data.organizationId,
+                };
+                boards.push(board);
+                return board;
+            },
+            update: async ({ where, data }: { where: any; data: any }) => {
+                const board = boards.find((b) => b.id === where.id)!;
+                Object.assign(board, data);
+                return board;
+            },
+            delete: async ({ where }: { where: any }) => {
+                const board = boards.find((b) => b.id === where.id)!;
+                boards = boards.filter((b) => b.id !== where.id);
+                sections = sections.filter((s) => s.boardId !== where.id);
+                return board;
+            },
+        },
+        section: {
+            findUnique: async ({ where }: { where: any }) =>
+                sections.find((s) => s.id === where?.id) ?? null,
+            findMany: async ({ where }: { where: any }) =>
+                sections.filter(
+                    (s) =>
+                        where?.boardId === undefined || s.boardId === where.boardId
+                ),
+            create: async ({ data }: { data: any }) => {
+                const section: MockSection = {
+                    id: data.id ?? nextId("sec"),
+                    title: data.title,
+                    order: data.order ?? 0,
+                    boardId: data.boardId,
+                };
+                sections.push(section);
+                return section;
+            },
+            update: async ({ where, data }: { where: any; data: any }) => {
+                const section = sections.find((s) => s.id === where.id)!;
+                Object.assign(section, data);
+                return section;
+            },
+            delete: async ({ where }: { where: any }) => {
+                const section = sections.find((s) => s.id === where.id)!;
+                sections = sections.filter((s) => s.id !== where.id);
+                return section;
+            },
+        },
+        $transaction: async (arg: any) =>
+            Array.isArray(arg)
+                ? await Promise.all(arg.map((op: any) => op))
+                : arg(prisma),
     };
 
     return {
@@ -188,6 +269,8 @@ const createPrismaMock = () => {
             users = seed.users ?? [];
             organizations = seed.organizations ?? [];
             memberships = seed.memberships ?? [];
+            boards = seed.boards ?? [];
+            sections = seed.sections ?? [];
             idSeq = 0;
         },
     };
