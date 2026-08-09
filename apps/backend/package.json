@@ -4,6 +4,7 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "dev": "bun --watch index.ts",
     "smoke": "bun run scripts/smoke.ts"
   },
   "devDependencies": {

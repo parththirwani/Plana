@@ -8,16 +8,17 @@ import boardRouter from "./src/routers/board";
 import issueRouter from "./src/routers/issue";
 import commentRouter from "./src/routers/comment";
 import onboardingRouter from "./src/routers/onboarding";
+import wsTokenRouter from "./src/routers/ws-token";
 
 export const app = express();
 
 app.use(
-    cors({
-        origin: process.env.CORS_ORIGIN?.split(",") ?? true,
-        credentials: true,
-    })
+  cors({
+    origin: process.env.CORS_ORIGIN?.split(",") ?? true,
+    credentials: true,
+  }),
 );
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 app.use(cookieParser());
 
 app.use("/api/v1/auth", authRouter);
@@ -27,9 +28,10 @@ app.use("/api/v1", boardRouter);
 app.use("/api/v1", issueRouter);
 app.use("/api/v1", commentRouter);
 app.use("/api/v1/onboarding", onboardingRouter);
+app.use("/api/v1", wsTokenRouter);
 
 if (process.env.NODE_ENV !== "test") {
-    app.listen(8000, () => {
-        console.log("Server running on http://localhost:8000");
-    });
+  app.listen(8000, () => {
+    console.log("Server running on http://localhost:8000");
+  });
 }
