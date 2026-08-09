@@ -1,159 +1,109 @@
-# Turborepo starter
+# Plana
 
-This Turborepo starter is maintained by the Turborepo core team.
+Plana is a Trello-style project management app. Teams organize work into **organizations → boards → sections (columns) → issues (cards)**, with live collaboration so everyone sees changes as they happen.
 
-## Using this example
+## Features
 
-Run the following command:
+- **Organizations**: create and join teams, each with their own boards and members.
+- **Roles & permissions**: `ADMIN`, `MODERATOR`, `MEMBER` with granular controls over who can edit boards, manage members, and change settings.
+- **Kanban boards**: drag-and-drop cards between columns, reorder columns, create/edit/delete boards, sections, and issues.
+- **Issues**: title, description, priority (`None/Low/Medium/High/Urgent`), due date, and assignees.
+- **Comments**: threaded discussion on every issue; authors and moderators can edit or delete.
+- **Live collaboration**: board changes sync to every connected teammate in real time, with an avatar shown next to the change.
+- **Onboarding & profile**: simple email/password auth, first-time onboarding to set name and avatar, editable profile.
 
-```sh
-npx create-turbo@latest
+## Screens
+
+1. Auth (sign up / sign in)
+2. Onboarding
+3. Home / Organizations
+4. Org settings (general, members, danger zone)
+5. Boards list
+6. Board (kanban)
+7. Issue detail
+8. Profile
+
+## Roles & permissions
+
+| Action | Member | Moderator | Admin |
+|---|---|---|---|
+| View org / boards / issues | ✅ | ✅ | ✅ |
+| Create/delete comments | ✅ | ✅ | ✅ |
+| Edit/delete own comments | ✅ | ✅ | ✅ |
+| Edit/delete any comment | ❌ | ✅ | ✅ |
+| Create/update/delete boards, sections, issues | ❌ | ✅ | ✅ |
+| Move / assign issues | ❌ | ✅ | ✅ |
+| Update org / invite / remove members / change roles | ❌ | ❌ | ✅ |
+| Leave org | ✅ | ✅ | ✅ (unless last admin) |
+
+The last remaining admin in an organization can never be demoted, removed, or leave.
+
+## Project structure
+
+```
+apps/
+  backend/     # Express REST API
+  websocket/   # Bun WebSocket server (realtime board events)
+packages/
+  db/          # Prisma + Postgres schema
 ```
 
-## What's inside?
+## Tech stack
 
-This Turborepo includes the following packages/apps:
+- **API:** Express (Node.js), REST, JSON responses shaped as `{ message, ...payload }`
+- **Realtime:** Bun WebSocket server, one socket per board
+- **Database:** PostgreSQL via Prisma
+- **Auth:** httpOnly session cookie (1h expiry)
 
-### Apps and Packages
+## API overview
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+Base URL: `/api/v1`
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
+| Resource | Endpoints |
+|---|---|
+| Auth | `POST /auth/signup`, `POST /auth/signin`, `POST /auth/logout`, `GET /auth/me` |
+| Onboarding & profile | `POST /onboarding`, `GET /profile`, `PUT /profile` |
+| Organizations | `POST /organizations`, `GET /organizations`, `GET /organizations/:id`, `GET /organizations/by-slug/:slug`, `PUT /organizations/:id`, `DELETE /organizations/:id` |
+| Members | `GET /organizations/:id/members`, `POST /organizations/:id/members`, `PATCH /organizations/:id/members/:userId`, `DELETE /organizations/:id/members/:userId`, `POST /organizations/:id/leave` |
+| Boards | `POST /organizations/:id/boards`, `GET /organizations/:id/boards`, `GET /boards/:id`, `PUT /boards/:id`, `DELETE /boards/:id` |
+| Sections | `POST /boards/:id/sections`, `PATCH /sections/:id`, `DELETE /sections/:id` |
+| Issues | `POST /sections/:id/issues`, `PATCH /issues/:id`, `DELETE /issues/:id`, `POST /issues/:id/move`, `PUT /issues/:id/assignees` |
+| Comments | `POST /issues/:id/comments`, `GET /issues/:id/comments`, `PATCH /comments/:id`, `DELETE /comments/:id` |
 
-### Utilities
+Standard HTTP status codes: `400` invalid body, `401` unauthenticated, `403` unauthorized (org existence is never leaked to non-members), `404` not found, `409` conflict.
 
-This Turborepo has some additional tools already setup for you:
+### Realtime events
 
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
+Connect to `wss://<host>/ws?boardId=<boardId>` (auth via the session cookie or a `token` query param). Each message:
 
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
+```json
+{
+  "boardId": "…",
+  "event": "board.updated | section.created | issue.moved | comment.created | …",
+  "actor": { "id": "…", "name": "…", "avatarUrl": "…" },
+  "data": { }
+}
 ```
 
-Without global `turbo`, use your package manager:
+## Getting started
 
-```sh
-cd my-turborepo
-npx turbo build
-bun dlx turbo build
-bun exec turbo build
+```bash
+# install dependencies
+bun install   # or npm install / pnpm install
+
+# set up the database
+cd packages/db
+bunx prisma migrate dev
+
+# run the backend API
+cd apps/backend
+bun run dev
+
+# run the websocket server
+cd apps/websocket
+bun run dev
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
+## License
 
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo build --filter=docs
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo build --filter=docs
-bun exec turbo build --filter=docs
-bun exec turbo build --filter=docs
-```
-
-### Develop
-
-To develop all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo dev
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo dev
-bun exec turbo dev
-bun exec turbo dev
-```
-
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo dev --filter=web
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo dev --filter=web
-bun exec turbo dev --filter=web
-bun exec turbo dev --filter=web
-```
-
-### Remote Caching
-
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo login
-bun exec turbo login
-bun exec turbo login
-```
-
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo link
-bun exec turbo link
-bun exec turbo link
-```
-
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)
+TBD
