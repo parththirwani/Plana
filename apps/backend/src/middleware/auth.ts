@@ -1,4 +1,4 @@
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response, NextFunction, CookieOptions } from "express";
 import jwt from "jsonwebtoken";
 
 export interface AuthenticatedRequest extends Request {
@@ -7,6 +7,20 @@ export interface AuthenticatedRequest extends Request {
         email: string;
     };
 }
+
+export const getJwtSecret = (): string => {
+    if (!process.env.JWT_SECRET) {
+        throw new Error("JWT_SECRET is not set");
+    }
+    return process.env.JWT_SECRET;
+};
+
+export const authCookieOptions: CookieOptions = {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.COOKIE_SECURE === "true",
+    maxAge: 60 * 60 * 1000, // 1h, matches JWT expiry
+};
 
 export const authMiddleware = (
     req: AuthenticatedRequest,
@@ -22,10 +36,7 @@ export const authMiddleware = (
             });
         }
 
-        const decoded = jwt.verify(
-            token,
-            process.env.JWT_SECRET!
-        ) as {
+        const decoded = jwt.verify(token, getJwtSecret()) as {
             userId: string;
             email: string;
         };
