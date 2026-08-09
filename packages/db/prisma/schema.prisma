@@ -1,0 +1,123 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id          String        @id @default(uuid())
+  email       String        @unique
+  password    String
+  name        String?
+  avatarUrl   String?
+  role        UserRole      @default(MEMBER)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  memberships Membership[]
+  comments    Comment[]
+  assignedIssues Issue[]    @relation("IssueAssignees")
+}
+
+model Organization {
+  id          String        @id @default(uuid())
+  name        String
+  slug        String        @unique
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  memberships Membership[]
+  boards      Board[]
+}
+
+model Membership {
+  id              String       @id @default(uuid())
+  userId          String
+  organizationId  String
+  role            UserRole     @default(MEMBER)
+  createdAt       DateTime     @default(now())
+
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+}
+
+model Board {
+  id              String       @id @default(uuid())
+  title           String
+  description     String?
+  organizationId  String
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sections        Section[]
+
+  @@index([organizationId])
+}
+
+model Section {
+  id          String        @id @default(uuid())
+  title       String
+  order       Int           @default(0)
+  boardId     String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  board       Board         @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  issues      Issue[]
+
+  @@index([boardId])
+}
+
+model Issue {
+  id          String        @id @default(uuid())
+  title       String
+  description String?
+  order       Int           @default(0)
+  priority    IssuePriority @default(NONE)
+  dueDate     DateTime?
+  sectionId   String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  section     Section       @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  comments    Comment[]
+  assignees   User[]        @relation("IssueAssignees")
+
+  @@index([sectionId])
+}
+
+model Comment {
+  id          String        @id @default(uuid())
+  content     String
+  issueId     String
+  authorId    String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  issue       Issue         @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  author      User          @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([issueId])
+  @@index([authorId])
+}
+
+enum UserRole {
+  MEMBER
+  ADMIN
+  MODERATOR
+}
+
+enum IssuePriority {
+  NONE
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
