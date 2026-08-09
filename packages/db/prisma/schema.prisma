@@ -16,10 +16,12 @@ model User {
   role        UserRole      @default(MEMBER)
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
+  onboardingCompleted Boolean @default(false)
 
   memberships Membership[]
   comments    Comment[]
   assignedIssues Issue[]    @relation("IssueAssignees")
+
 }
 
 model Organization {
