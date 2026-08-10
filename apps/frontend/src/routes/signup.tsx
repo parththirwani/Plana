@@ -4,7 +4,7 @@ import { AuthPage } from "@/components/auth/AuthPage";
 export const Route = createFileRoute("/signup")({
   head: () => ({
     meta: [
-      { title: "Create your account — Plana" },
+      { title: "Plana" },
       { name: "description", content: "Create your Plana account and start planning." },
     ],
   }),

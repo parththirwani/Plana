@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
  * Custom glyph set for Plana.
  * Rules: 24px grid, single 1.5px stroke, round caps/joins, 2px corner radius
  * family, no fills, no gradients. Shapes are abstractions of the product's
- * own UI — cards, columns, rows, threads — not stock symbols.
+ * own UI (cards, columns, rows, threads), not stock symbols.
  */
 
 type GlyphProps = SVGProps<SVGSVGElement>;
@@ -52,7 +52,7 @@ export function GlyphCardMove(props: GlyphProps) {
   );
 }
 
-/** Rows of people with an access marker — roles and permissions. */
+/** Rows of people with an access marker: roles and permissions. */
 export function GlyphRoster(props: GlyphProps) {
   return (
     <Base {...props}>
@@ -65,7 +65,7 @@ export function GlyphRoster(props: GlyphProps) {
   );
 }
 
-/** Dot-and-line connection mark — updates travelling between people. */
+/** Dot-and-line connection mark: updates travelling between people. */
 export function GlyphSync(props: GlyphProps) {
   return (
     <Base {...props}>
@@ -89,7 +89,7 @@ export function GlyphThread(props: GlyphProps) {
   );
 }
 
-/** Workspace mark — an outer frame holding smaller members. */
+/** Workspace mark: an outer frame holding smaller members. */
 export function GlyphWorkspace(props: GlyphProps) {
   return (
     <Base {...props}>

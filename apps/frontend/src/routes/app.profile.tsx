@@ -19,9 +19,9 @@ import { ApiError, updateProfile } from "@/lib/api";
 export const Route = createFileRoute("/app/profile")({
   head: () => ({
     meta: [
-      { title: "Your profile — Plana" },
+      { title: "Plana" },
       { name: "description", content: "Update your name and avatar in Plana." },
-      { property: "og:title", content: "Your profile — Plana" },
+      { property: "og:title", content: "Your profile · Plana" },
       { property: "og:description", content: "Update your name and avatar in Plana." },
     ],
   }),

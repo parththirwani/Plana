@@ -383,28 +383,42 @@ router.post(
                 });
             }
 
-            const created = await prisma.membership.create({
-                data: {
-                    userId: user.id,
-                    organizationId,
-                    role: "MEMBER",
-                },
+            const pending = await prisma.invitation.findFirst({
+                where: { organizationId, email: user.email },
             });
 
-            return res.status(201).json({
-                message: "Member invited successfully",
-                membership: {
-                    id: created.id,
-                    userId: created.userId,
-                    role: created.role,
-                    user: {
-                        id: user.id,
+            if (pending) {
+                return res.status(409).json({
+                    message: "Invitation already pending for this user",
+                });
+            }
+
+            try {
+                const created = await prisma.invitation.create({
+                    data: {
+                        organizationId,
                         email: user.email,
-                        name: user.name,
-                        avatarUrl: user.avatarUrl,
+                        role: "MEMBER",
                     },
-                },
-            });
+                });
+
+                return res.status(201).json({
+                    message: "Invitation sent successfully",
+                    invitation: {
+                        id: created.id,
+                        organizationId: created.organizationId,
+                        email: created.email,
+                        role: created.role,
+                    },
+                });
+            } catch (error) {
+                if ((error as { code?: string })?.code === "P2002") {
+                    return res.status(409).json({
+                        message: "Invitation already pending for this user",
+                    });
+                }
+                throw error;
+            }
         } catch (error) {
             console.error("Invite member error:", error);
 

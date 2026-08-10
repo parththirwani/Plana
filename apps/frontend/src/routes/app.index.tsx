@@ -19,12 +19,12 @@ import { Authed } from "@/lib/auth-guard";
 export const Route = createFileRoute("/app/")({
   head: () => ({
     meta: [
-      { title: "Your organizations — Plana" },
+      { title: "Plana" },
       {
         name: "description",
         content: "Every Plana workspace you belong to, with your role at a glance.",
       },
-      { property: "og:title", content: "Your organizations — Plana" },
+      { property: "og:title", content: "Your organizations · Plana" },
       {
         property: "og:description",
         content: "Every Plana workspace you belong to, in one calm grid.",

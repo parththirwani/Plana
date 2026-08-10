@@ -1,16 +1,19 @@
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import {
+  Bell,
   ChevronsLeft,
   ChevronsRight,
   ChevronDown,
   LayoutGrid,
   LogOut,
+  Mail,
   Settings,
   Users,
   UserRound,
   Check,
 } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { formatDistanceToNow } from "date-fns";
 import { cn } from "@/lib/utils";
 import { usePlana } from "@/lib/plana-store";
 import { useAuthStore } from "@/lib/auth-store";
@@ -39,6 +42,76 @@ function OrgMark({ name, size = 28, src }: { name: string; size?: number; src?: 
 
 export { OrgMark };
 
+function NotificationsBell() {
+  const notifications = usePlana((s) => s.notifications);
+  const markRead = usePlana((s) => s.markNotificationsRead);
+  const realtimeStatus = usePlana((s) => s.realtimeStatus);
+  const [open, setOpen] = useState(false);
+  const unread = notifications.filter((n) => !n.read).length;
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => {
+          setOpen((v) => !v);
+          if (!open) markRead();
+        }}
+        className="relative rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`}
+      >
+        <Icon icon={Bell} />
+        {realtimeStatus === "disconnected" && (
+          <span
+            className="absolute -top-0.5 -left-0.5 h-2 w-2 animate-pulse rounded-full bg-destructive"
+            aria-label="Realtime disconnected retrying"
+            title="Realtime disconnected retrying"
+          />
+        )}
+        {realtimeStatus === "connecting" && (
+          <span
+            className="absolute -top-0.5 -left-0.5 h-2 w-2 animate-pulse rounded-full bg-amber-400"
+            aria-label="Realtime connecting"
+            title="Realtime connecting"
+          />
+        )}
+        {unread > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold text-destructive-foreground">
+            {unread > 9 ? "9+" : unread}
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="fade-up absolute right-0 z-30 mt-1 w-80 rounded-xl border border-border bg-popover p-1 shadow-panel">
+          <p className="label-eyebrow px-2 pt-1.5 pb-1">Notifications</p>
+          {realtimeStatus === "disconnected" && (
+            <p className="px-2 pb-1 text-xs text-destructive">Realtime disconnected retrying…</p>
+          )}
+          {notifications.length === 0 ? (
+            <p className="px-2 pb-2 text-sm text-muted-foreground">
+              No notifications yet. Activity on boards you're viewing shows up here.
+            </p>
+          ) : (
+            <div className="max-h-72 overflow-y-auto">
+              {notifications.slice(0, 50).map((n) => (
+                <div key={n.id} className="rounded-lg px-2 py-1.5">
+                  <p className={cn("text-sm", n.read ? "text-muted-foreground" : "font-medium")}>
+                    {n.text}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatDistanceToNow(n.at, { addSuffix: true })}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export { NotificationsBell };
+
 export function AppShell({
   orgId,
   title,
@@ -56,6 +129,8 @@ export function AppShell({
 }) {
   const orgs = usePlana((s) => s.orgs);
   const loadOrgs = usePlana((s) => s.loadOrgs);
+  const invitations = usePlana((s) => s.invitations);
+  const loadInvitations = usePlana((s) => s.loadInvitations);
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const didInit = useRef(false);
@@ -78,8 +153,9 @@ export function AppShell({
     if (!didInit.current) {
       didInit.current = true;
       void loadOrgs();
+      void loadInvitations();
     }
-  }, [loadOrgs]);
+  }, [loadOrgs, loadInvitations]);
 
   if (!user) return null;
 
@@ -112,6 +188,27 @@ export function AppShell({
     },
   ] as const;
 
+  const navItems = [
+    {
+      label: "Invitations",
+      icon: Mail,
+      to: "/app/invitations",
+      search: undefined,
+      active: location.pathname === "/app/invitations",
+    },
+    ...(org
+      ? nav
+      : [
+          {
+            label: "Organizations",
+            icon: LayoutGrid,
+            to: "/app",
+            search: undefined,
+            active: location.pathname === "/app",
+          },
+        ]),
+  ] as const;
+
   return (
     <div className="flex min-h-screen bg-background">
       <aside
@@ -120,20 +217,48 @@ export function AppShell({
           collapsed ? "w-[68px]" : "w-64",
         )}
       >
-        <div className="flex items-center gap-2 px-4 py-4">
-          <Link to="/app" className="flex items-center gap-2">
-            <span className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
-              P
-            </span>
-            {!collapsed && <span className="text-sm font-semibold tracking-tight">Plana</span>}
-          </Link>
-          <button
-            onClick={() => setCollapsed((c) => !c)}
-            className="ml-auto rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            <Icon icon={collapsed ? ChevronsRight : ChevronsLeft} />
-          </button>
+        <div
+          className={cn("flex items-center gap-2 py-4", collapsed ? "justify-center px-0" : "px-4")}
+        >
+          {collapsed ? (
+            <button
+              onClick={() => setCollapsed(false)}
+              className="group rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              aria-label="Expand sidebar"
+              title="Expand sidebar"
+            >
+              <img
+                src="/logo.png"
+                alt="Plana"
+                width={230}
+                height={256}
+                decoding="async"
+                className="h-4 w-4 object-contain group-hover:hidden"
+              />
+              <Icon icon={ChevronsRight} className="hidden group-hover:block" />
+            </button>
+          ) : (
+            <>
+              <Link to="/app" className="flex items-center gap-2">
+                <img
+                  src="/logo.png"
+                  alt="Plana"
+                  width={230}
+                  height={256}
+                  decoding="async"
+                  className="h-4 w-4 object-contain"
+                />
+                <span className="text-sm font-semibold tracking-tight">Plana</span>
+              </Link>
+              <button
+                onClick={() => setCollapsed(true)}
+                className="ml-auto rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="Collapse sidebar"
+              >
+                <Icon icon={ChevronsLeft} />
+              </button>
+            </>
+          )}
         </div>
 
         {org && (
@@ -182,18 +307,7 @@ export function AppShell({
 
         <nav className="mt-4 flex flex-col gap-1 px-3">
           {!collapsed && <p className="label-eyebrow px-2 pb-1">Workspace</p>}
-          {(org
-            ? nav
-            : [
-                {
-                  label: "Organizations",
-                  icon: LayoutGrid,
-                  to: "/app",
-                  search: undefined,
-                  active: location.pathname === "/app",
-                },
-              ]
-          ).map((item) => (
+          {navItems.map((item) => (
             <Link
               key={item.label}
               to={item.to}
@@ -204,7 +318,12 @@ export function AppShell({
               )}
             >
               <IconBox icon={item.icon} size="sm" />
-              {!collapsed && item.label}
+              {!collapsed && <span className="truncate">{item.label}</span>}
+              {!collapsed && item.label === "Invitations" && invitations.length > 0 && (
+                <span className="ml-auto rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+                  {invitations.length}
+                </span>
+              )}
             </Link>
           ))}
         </nav>
@@ -254,7 +373,10 @@ export function AppShell({
             )}
             <h1 className="truncate text-xl font-semibold tracking-tight">{title}</h1>
           </div>
-          <div className="ml-auto flex items-center gap-2">{action}</div>
+          <div className="ml-auto flex items-center gap-2">
+            <NotificationsBell />
+            {action}
+          </div>
         </header>
         <main className={cn("min-w-0 flex-1", fullHeight ? "overflow-hidden" : "px-6 py-6")}>
           {children}

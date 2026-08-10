@@ -64,7 +64,7 @@ export function Bento() {
                   </h3>
                   <p className="mt-3 max-w-md text-muted-foreground">
                     Drag cards across columns, reorder in seconds, and see the whole project at a
-                    glance — without asking anyone for an update.
+                    glance without asking anyone for an update.
                   </p>
                 </div>
                 <div className="overflow-hidden rounded-xl border border-border shadow-soft">

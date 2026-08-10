@@ -95,6 +95,7 @@ router.post(
 
             void notifyBoard(board.id, "issue.created", req.user.userId, {
                 issue: shapeIssue(created),
+                sectionTitle: section.title,
             });
 
             return res.status(201).json({
@@ -330,6 +331,8 @@ router.post(
 
             void notifyBoard(board.id, "issue.moved", req.user.userId, {
                 issue: shapeIssue(updated),
+                fromSectionTitle: currentSection.title,
+                toSectionTitle: targetSection.title,
             });
 
             return res.status(200).json({

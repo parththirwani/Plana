@@ -55,6 +55,21 @@ const loadActor = (id: string): Promise<NotifyActor | null> =>
               select: { id: true, name: true, avatarUrl: true },
           });
 
+const shrink = (data: unknown): unknown => {
+    const issue = (data as any)?.issue as { id?: string; title?: string } | undefined;
+    if (issue?.id) {
+        // title can itself exceed the 8 KB cap; truncate so the marker is
+        // bounded regardless of what the user typed.
+        return {
+            needsRefetch: true,
+            issue: { id: issue.id, title: (issue.title ?? "").slice(0, 120) },
+        };
+    }
+    const comment = (data as any)?.comment as { issueId?: string } | undefined;
+    if (comment?.issueId) return { needsRefetch: true, comment: { issueId: comment.issueId } };
+    return { needsRefetch: true };
+};
+
 export const notifyBoard = async (
     boardId: string,
     event: BoardEvent,
@@ -67,14 +82,25 @@ export const notifyBoard = async (
         const actor = await loadActor(actorId);
         if (!actor) return;
 
-        await getPool().query("SELECT pg_notify($1, $2)", [
-            "board_events",
-            JSON.stringify({
+        let payload = JSON.stringify({ boardId, event, actor, data });
+        if (Buffer.byteLength(payload) >= 7000) {
+            payload = JSON.stringify({ boardId, event, actor, data: shrink(data) });
+        }
+        // Belt-and-braces: actor name/avatarUrl are unbounded too and shrink
+        // does not touch them. Rather than let the whole realtime channel die,
+        // drop every non-essential field so NOTIFY can never be rejected.
+        if (Buffer.byteLength(payload) >= 7999) {
+            payload = JSON.stringify({
                 boardId,
                 event,
-                actor,
-                data,
-            }),
+                actor: { id: actor.id },
+                data: { needsRefetch: true },
+            });
+        }
+
+        await getPool().query("SELECT pg_notify($1, $2)", [
+            "board_events",
+            payload,
         ]);
     } catch (error) {
         console.error("Realtime notify failed:", error);

@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Mail, Settings2, Trash2, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppShell, OrgMark } from "@/components/plana/app-shell";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   EmptyState,
   Field,
@@ -34,9 +35,9 @@ export const Route = createFileRoute("/app/org/$orgId/settings")({
   validateSearch: settingsSearch,
   head: () => ({
     meta: [
-      { title: "Organization settings — Plana" },
+      { title: "Plana" },
       { name: "description", content: "Manage the workspace profile, members and roles." },
-      { property: "og:title", content: "Organization settings — Plana" },
+      { property: "og:title", content: "Organization settings · Plana" },
       {
         property: "og:description",
         content: "Manage the workspace profile, members and roles in Plana.",
@@ -85,6 +86,12 @@ function OrgSettings() {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description?: string;
+    confirmLabel?: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
 
   useEffect(() => {
     void loadMembers(orgId);
@@ -154,7 +161,6 @@ function OrgSettings() {
   };
 
   const remove = async (userId: string) => {
-    if (!window.confirm("Remove this member from the organization?")) return;
     setError(null);
     try {
       await removeMember(org.id, userId);
@@ -164,7 +170,6 @@ function OrgSettings() {
   };
 
   const leave = async () => {
-    if (!window.confirm("Leave this organization? You'll lose access to its boards.")) return;
     setError(null);
     try {
       await leaveOrg(org.id);
@@ -175,8 +180,6 @@ function OrgSettings() {
   };
 
   const removeOrg = async () => {
-    if (!window.confirm("Delete this organization permanently? This removes every board and card."))
-      return;
     setError(null);
     try {
       await deleteOrg(org.id);
@@ -318,7 +321,14 @@ function OrgSettings() {
                       {m.userId !== currentUser?.id && (
                         <GhostButton
                           aria-label={`Remove ${m.user.name ?? m.user.email}`}
-                          onClick={() => void remove(m.userId)}
+                          onClick={() =>
+                            setConfirm({
+                              title: "Remove this member?",
+                              description: "They will lose access to this organization.",
+                              confirmLabel: "Remove",
+                              onConfirm: () => remove(m.userId),
+                            })
+                          }
                         >
                           <Icon icon={Trash2} />
                         </GhostButton>
@@ -350,7 +360,18 @@ function OrgSettings() {
                   You'll lose access to its boards until someone invites you back.
                 </p>
               </div>
-              <SecondaryButton className="ml-auto" onClick={leave}>
+              <SecondaryButton
+                className="ml-auto"
+                onClick={() =>
+                  setConfirm({
+                    title: "Leave this organization?",
+                    description:
+                      "You will lose access to its boards until someone invites you back.",
+                    confirmLabel: "Leave",
+                    onConfirm: () => leave(),
+                  })
+                }
+              >
                 Leave
               </SecondaryButton>
             </div>
@@ -364,7 +385,13 @@ function OrgSettings() {
                 </div>
                 <SecondaryButton
                   className="ml-auto border-destructive/30 text-destructive hover:bg-destructive-soft"
-                  onClick={removeOrg}
+                  onClick={() =>
+                    setConfirm({
+                      title: "Delete this organization?",
+                      description: "This permanently removes every board and card.",
+                      onConfirm: () => removeOrg(),
+                    })
+                  }
                 >
                   Delete
                 </SecondaryButton>
@@ -373,6 +400,19 @@ function OrgSettings() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirm(null);
+        }}
+        title={confirm?.title ?? ""}
+        description={confirm?.description}
+        confirmLabel={confirm?.confirmLabel}
+        onConfirm={() => {
+          confirm?.onConfirm();
+        }}
+      />
     </AppShell>
   );
 }

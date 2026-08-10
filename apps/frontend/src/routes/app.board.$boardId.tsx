@@ -21,18 +21,19 @@ import { atLeast } from "@/lib/plana-types";
 import { Authed } from "@/lib/auth-guard";
 import { ApiError } from "@/lib/api";
 import { connectBoardSocket } from "@/lib/board-socket";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/app/board/$boardId")({
   head: () => ({
     meta: [
-      { title: "Board — Plana" },
+      { title: "Plana" },
       {
         name: "description",
         content:
           "A calm kanban board: drag cards between sections, your team sees changes as they happen.",
       },
-      { property: "og:title", content: "Board — Plana" },
+      { property: "og:title", content: "Board · Plana" },
       {
         property: "og:description",
         content: "Drag cards between sections. Your team sees changes as they happen.",
@@ -87,6 +88,11 @@ function BoardScreen() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description?: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
 
   useEffect(() => {
     void loadBoard(boardId);
@@ -216,7 +222,6 @@ function BoardScreen() {
   };
 
   const removeSection = async (sectionId: string) => {
-    if (!window.confirm("Delete this section and all its cards?")) return;
     try {
       await deleteSection(sectionId);
     } catch (e) {
@@ -225,7 +230,6 @@ function BoardScreen() {
   };
 
   const removeBoard = async () => {
-    if (!window.confirm("Delete this board permanently?")) return;
     try {
       await deleteBoard(board.id);
       navigate({ to: "/app/org/$orgId", params: { orgId: board.organizationId } });
@@ -278,7 +282,11 @@ function BoardScreen() {
                       className="block w-full rounded-lg px-2 py-1.5 text-left text-sm text-destructive hover:bg-destructive-soft"
                       onClick={() => {
                         setMenu(false);
-                        void removeBoard();
+                        setConfirm({
+                          title: "Delete this board?",
+                          description: "This permanently removes the board and everything in it.",
+                          onConfirm: () => removeBoard(),
+                        });
                       }}
                     >
                       Delete board
@@ -389,7 +397,13 @@ function BoardScreen() {
                         <Icon icon={Plus} />
                       </button>
                       <button
-                        onClick={() => void removeSection(section.id)}
+                        onClick={() =>
+                          setConfirm({
+                            title: "Delete this section?",
+                            description: "All cards inside it will also be deleted.",
+                            onConfirm: () => removeSection(section.id),
+                          })
+                        }
                         className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
                         aria-label={`Delete section ${section.title}`}
                       >
@@ -505,6 +519,18 @@ function BoardScreen() {
       </div>
 
       {issue && <IssuePanel issue={issue} role={role} onClose={() => setOpenIssue(null)} />}
+
+      <ConfirmDialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirm(null);
+        }}
+        title={confirm?.title ?? ""}
+        description={confirm?.description}
+        onConfirm={() => {
+          confirm?.onConfirm();
+        }}
+      />
     </AppShell>
   );
 }

@@ -90,6 +90,24 @@ const seed = () =>
         ],
     });
 
+const seedWithInvitations = (invitations: any[]) =>
+    prismaMock.reset({
+        users: [
+            makeUser("alice", "alice@example.com"),
+            makeUser("bob", "bob@example.com"),
+            makeUser("carol", "carol@example.com"),
+            makeUser("dave", "dave@example.com"),
+            makeUser("eve", "eve@example.com"),
+        ],
+        organizations: [makeOrg("org_1", "Acme", "acme")],
+        memberships: [
+            makeMembership("mem_alice", "alice", "org_1", "ADMIN"),
+            makeMembership("mem_bob", "bob", "org_1", "MODERATOR"),
+            makeMembership("mem_carol", "carol", "org_1", "MEMBER"),
+        ],
+        invitations,
+    });
+
 describe("POST /api/v1/organizations", () => {
     test("creates an org, sets the creator as ADMIN, and returns a slug", async () => {
         seed();
@@ -419,7 +437,7 @@ describe("DELETE /api/v1/organizations/:id", () => {
 });
 
 describe("POST /api/v1/organizations/:id/members", () => {
-    test("lets an ADMIN invite an existing user as MEMBER", async () => {
+    test("lets an ADMIN invite an existing user, creating a pending invitation", async () => {
         seed();
         const cookie = await http.login("alice@example.com");
         const res = await http.post(
@@ -430,7 +448,11 @@ describe("POST /api/v1/organizations/:id/members", () => {
 
         expect(res.status).toBe(201);
         const body: any = await res.json();
-        expect(body.membership).toMatchObject({ userId: "eve", role: "MEMBER" });
+        expect(body.invitation).toMatchObject({
+            organizationId: "org_1",
+            email: "eve@example.com",
+            role: "MEMBER",
+        });
     });
 
     test("returns 404 for an unknown user", async () => {
@@ -451,6 +473,20 @@ describe("POST /api/v1/organizations/:id/members", () => {
         const res = await http.post(
             "/api/v1/organizations/org_1/members",
             { email: "carol@example.com" },
+            cookie
+        );
+
+        expect(res.status).toBe(409);
+    });
+
+    test("returns 409 for a duplicate pending invitation", async () => {
+        seedWithInvitations([
+            { id: "inv_1", organizationId: "org_1", email: "eve@example.com", role: "MEMBER" },
+        ]);
+        const cookie = await http.login("alice@example.com");
+        const res = await http.post(
+            "/api/v1/organizations/org_1/members",
+            { email: "eve@example.com" },
             cookie
         );
 
@@ -479,6 +515,108 @@ describe("POST /api/v1/organizations/:id/members", () => {
         );
 
         expect(res.status).toBe(400);
+    });
+});
+
+describe("GET /api/v1/invitations", () => {
+    test("lists only the caller's pending invitations with org details", async () => {
+        seedWithInvitations([
+            { id: "inv_1", organizationId: "org_1", email: "eve@example.com", role: "MEMBER" },
+            { id: "inv_2", organizationId: "org_1", email: "dave@example.com", role: "MEMBER" },
+        ]);
+        const cookie = await http.login("eve@example.com");
+        const res = await http.get("/api/v1/invitations", cookie);
+
+        expect(res.status).toBe(200);
+        const body: any = await res.json();
+        expect(body.invitations).toHaveLength(1);
+        expect(body.invitations[0]).toMatchObject({
+            id: "inv_1",
+            organizationId: "org_1",
+            organizationName: "Acme",
+            role: "MEMBER",
+        });
+    });
+
+    test("returns an empty list with no invitations", async () => {
+        seed();
+        const cookie = await http.login("dave@example.com");
+        const body: any = await (
+            await http.get("/api/v1/invitations", cookie)
+        ).json();
+
+        expect(body.invitations).toEqual([]);
+    });
+
+    test("rejects unauthenticated requests", async () => {
+        const res = await http.get("/api/v1/invitations");
+        expect(res.status).toBe(401);
+    });
+});
+
+describe("POST /api/v1/invitations/:id/accept", () => {
+    test("accepts an invitation, joins the org, and removes the invitation", async () => {
+        seedWithInvitations([
+            { id: "inv_1", organizationId: "org_1", email: "eve@example.com", role: "MEMBER" },
+        ]);
+        const cookie = await http.login("eve@example.com");
+        const res = await http.post("/api/v1/invitations/inv_1/accept", undefined, cookie);
+
+        expect(res.status).toBe(200);
+        const body: any = await res.json();
+        expect(body.organization).toMatchObject({ id: "org_1", name: "Acme", role: "MEMBER" });
+
+        const members: any = await (
+            await http.get("/api/v1/organizations/org_1/members", cookie)
+        ).json();
+        expect(members.members.find((m: any) => m.userId === "eve").role).toBe("MEMBER");
+
+        const invites: any = await (
+            await http.get("/api/v1/invitations", cookie)
+        ).json();
+        expect(invites.invitations).toEqual([]);
+    });
+
+    test("returns 404 when the invitation belongs to someone else", async () => {
+        seedWithInvitations([
+            { id: "inv_1", organizationId: "org_1", email: "eve@example.com", role: "MEMBER" },
+        ]);
+        const cookie = await http.login("dave@example.com");
+        const res = await http.post("/api/v1/invitations/inv_1/accept", undefined, cookie);
+
+        expect(res.status).toBe(404);
+    });
+
+    test("rejects unauthenticated requests", async () => {
+        const res = await http.post("/api/v1/invitations/inv_1/accept");
+        expect(res.status).toBe(401);
+    });
+});
+
+describe("POST /api/v1/invitations/:id/decline", () => {
+    test("declines an invitation and removes it", async () => {
+        seedWithInvitations([
+            { id: "inv_1", organizationId: "org_1", email: "eve@example.com", role: "MEMBER" },
+        ]);
+        const cookie = await http.login("eve@example.com");
+        const res = await http.post("/api/v1/invitations/inv_1/decline", undefined, cookie);
+
+        expect(res.status).toBe(200);
+
+        const invites: any = await (
+            await http.get("/api/v1/invitations", cookie)
+        ).json();
+        expect(invites.invitations).toEqual([]);
+    });
+
+    test("returns 404 when the invitation belongs to someone else", async () => {
+        seedWithInvitations([
+            { id: "inv_1", organizationId: "org_1", email: "eve@example.com", role: "MEMBER" },
+        ]);
+        const cookie = await http.login("dave@example.com");
+        const res = await http.post("/api/v1/invitations/inv_1/decline", undefined, cookie);
+
+        expect(res.status).toBe(404);
     });
 });
 

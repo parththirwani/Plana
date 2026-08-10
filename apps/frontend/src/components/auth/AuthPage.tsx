@@ -73,9 +73,14 @@ export function AuthPage({ mode }: { mode: "login" | "signup" }) {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm">
         <Link to="/" className="mb-6 flex items-center justify-center gap-2">
-          <span className="grid size-8 place-items-center rounded-lg bg-accent text-sm font-bold text-accent-foreground">
-            P
-          </span>
+          <img
+            src="/logo.png"
+            alt="Plana"
+            width={230}
+            height={256}
+            decoding="async"
+            className="size-8 object-contain"
+          />
           <span className="text-base font-semibold tracking-tight">Plana</span>
         </Link>
 

@@ -22,6 +22,13 @@ export type MockMembership = {
     role: string;
 };
 
+export type MockInvitation = {
+    id: string;
+    organizationId: string;
+    email: string;
+    role: string;
+};
+
 export type MockBoard = {
     id: string;
     title: string;
@@ -60,6 +67,7 @@ export type MockSeed = {
     users?: MockUser[];
     organizations?: MockOrg[];
     memberships?: MockMembership[];
+    invitations?: MockInvitation[];
     boards?: MockBoard[];
     sections?: MockSection[];
     issues?: MockIssue[];
@@ -70,6 +78,7 @@ const createPrismaMock = () => {
     let users: MockUser[] = [];
     let organizations: MockOrg[] = [];
     let memberships: MockMembership[] = [];
+    let invitations: MockInvitation[] = [];
     let boards: MockBoard[] = [];
     let sections: MockSection[] = [];
     let issues: MockIssue[] = [];
@@ -80,6 +89,7 @@ const createPrismaMock = () => {
             ...users,
             ...organizations,
             ...memberships,
+            ...invitations,
             ...boards,
             ...sections,
             ...issues,
@@ -188,6 +198,9 @@ const createPrismaMock = () => {
                 memberships = memberships.filter(
                     (m) => m.organizationId !== where.id
                 );
+                invitations = invitations.filter(
+                    (i) => i.organizationId !== where.id
+                );
                 return org;
             },
         },
@@ -259,6 +272,78 @@ const createPrismaMock = () => {
                 )!;
                 memberships = memberships.filter((m) => m.id !== where.id);
                 return membership;
+            },
+        },
+        invitation: {
+            findUnique: async ({
+                where,
+                include,
+            }: {
+                where: any;
+                include?: any;
+            }) => {
+                const invitation =
+                    invitations.find((i) => i.id === where?.id) ?? null;
+                if (invitation && include?.organization) {
+                    return {
+                        ...invitation,
+                        organization:
+                            organizations.find(
+                                (o) => o.id === invitation.organizationId
+                            ) ?? null,
+                    };
+                }
+                return invitation;
+            },
+            findFirst: async ({ where }: { where: any }) =>
+                invitations.find(
+                    (i) =>
+                        (where?.organizationId === undefined ||
+                            i.organizationId === where.organizationId) &&
+                        (where?.email === undefined ||
+                            i.email.toLowerCase() ===
+                                String(where.email).toLowerCase())
+                ) ?? null,
+            findMany: async ({
+                where,
+                include,
+            }: {
+                where: any;
+                include?: any;
+            }) => {
+                let result = invitations.filter(
+                    (i) =>
+                        where?.email === undefined ||
+                        i.email.toLowerCase() ===
+                            String(where.email).toLowerCase()
+                );
+                if (include?.organization) {
+                    return result.map((i) => ({
+                        ...i,
+                        organization:
+                            organizations.find(
+                                (o) => o.id === i.organizationId
+                            ) ?? null,
+                    }));
+                }
+                return result;
+            },
+            create: async ({ data }: { data: any }) => {
+                const invitation: MockInvitation = {
+                    id: data.id ?? nextId("inv"),
+                    organizationId: data.organizationId,
+                    email: data.email,
+                    role: data.role,
+                };
+                invitations.push(invitation);
+                return invitation;
+            },
+            delete: async ({ where }: { where: any }) => {
+                const invitation = invitations.find(
+                    (i) => i.id === where.id
+                )!;
+                invitations = invitations.filter((i) => i.id !== where.id);
+                return invitation;
             },
         },
         board: {
@@ -449,6 +534,7 @@ const createPrismaMock = () => {
             users = seed.users ?? [];
             organizations = seed.organizations ?? [];
             memberships = seed.memberships ?? [];
+            invitations = seed.invitations ?? [];
             boards = seed.boards ?? [];
             sections = seed.sections ?? [];
             issues = seed.issues ?? [];

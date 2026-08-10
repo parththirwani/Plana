@@ -2,6 +2,7 @@ import type {
   Board,
   BoardDetail,
   Comment,
+  Invitation,
   Issue,
   Member,
   Organization,
@@ -123,10 +124,10 @@ export const listMembers = (organizationId: string) =>
   request<{ members: Member[] }>(`/organizations/${organizationId}/members`);
 
 export const inviteMember = (organizationId: string, email: string) =>
-  request<{ membership: Member }>(`/organizations/${organizationId}/members`, {
-    method: "POST",
-    body: { email },
-  });
+  request<{ invitation: { id: string; organizationId: string; email: string; role: Role } }>(
+    `/organizations/${organizationId}/members`,
+    { method: "POST", body: { email } },
+  );
 
 export const changeMemberRole = (organizationId: string, userId: string, role: Role) =>
   request<{ membership: Omit<Member, "user"> }>(
@@ -144,6 +145,16 @@ export const removeMember = (organizationId: string, userId: string) =>
 
 export const leaveOrganization = (organizationId: string) =>
   request<Record<string, never>>(`/organizations/${organizationId}/leave`, { method: "POST" });
+
+/* ---------- Invitations ---------- */
+
+export const listInvitations = () => request<{ invitations: Invitation[] }>("/invitations");
+
+export const acceptInvitation = (id: string) =>
+  request<{ organization: Organization }>(`/invitations/${id}/accept`, { method: "POST" });
+
+export const declineInvitation = (id: string) =>
+  request<Record<string, never>>(`/invitations/${id}/decline`, { method: "POST" });
 
 /* ---------- Boards ---------- */
 

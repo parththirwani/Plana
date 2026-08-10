@@ -14,6 +14,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as AppIndexRouteImport } from './routes/app.index'
+import { Route as AppInvitationsRouteImport } from './routes/app.invitations'
 import { Route as AppProfileRouteImport } from './routes/app.profile'
 import { Route as AppBoardBoardIdRouteImport } from './routes/app.board.$boardId'
 import { Route as AppOrgOrgIdIndexRouteImport } from './routes/app.org.$orgId.index'
@@ -44,6 +45,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/app/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppInvitationsRoute = AppInvitationsRouteImport.update({
+  id: '/app/invitations',
+  path: '/app/invitations',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppProfileRoute = AppProfileRouteImport.update({
   id: '/app/profile',
   path: '/app/profile',
@@ -70,6 +76,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/signup': typeof SignupRoute
+  '/app/invitations': typeof AppInvitationsRoute
   '/app/profile': typeof AppProfileRoute
   '/app/': typeof AppIndexRoute
   '/app/board/$boardId': typeof AppBoardBoardIdRoute
@@ -81,6 +88,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/signup': typeof SignupRoute
+  '/app/invitations': typeof AppInvitationsRoute
   '/app/profile': typeof AppProfileRoute
   '/app': typeof AppIndexRoute
   '/app/board/$boardId': typeof AppBoardBoardIdRoute
@@ -93,6 +101,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/onboarding': typeof OnboardingRoute
   '/signup': typeof SignupRoute
+  '/app/invitations': typeof AppInvitationsRoute
   '/app/profile': typeof AppProfileRoute
   '/app/': typeof AppIndexRoute
   '/app/board/$boardId': typeof AppBoardBoardIdRoute
@@ -106,6 +115,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/onboarding'
     | '/signup'
+    | '/app/invitations'
     | '/app/profile'
     | '/app/'
     | '/app/board/$boardId'
@@ -117,6 +127,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/onboarding'
     | '/signup'
+    | '/app/invitations'
     | '/app/profile'
     | '/app'
     | '/app/board/$boardId'
@@ -128,6 +139,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/onboarding'
     | '/signup'
+    | '/app/invitations'
     | '/app/profile'
     | '/app/'
     | '/app/board/$boardId'
@@ -140,6 +152,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   OnboardingRoute: typeof OnboardingRoute
   SignupRoute: typeof SignupRoute
+  AppInvitationsRoute: typeof AppInvitationsRoute
   AppProfileRoute: typeof AppProfileRoute
   AppIndexRoute: typeof AppIndexRoute
   AppBoardBoardIdRoute: typeof AppBoardBoardIdRoute
@@ -184,6 +197,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/app/invitations': {
+      id: '/app/invitations'
+      path: '/app/invitations'
+      fullPath: '/app/invitations'
+      preLoaderRoute: typeof AppInvitationsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/app/profile': {
       id: '/app/profile'
       path: '/app/profile'
@@ -220,6 +240,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   OnboardingRoute: OnboardingRoute,
   SignupRoute: SignupRoute,
+  AppInvitationsRoute: AppInvitationsRoute,
   AppProfileRoute: AppProfileRoute,
   AppIndexRoute: AppIndexRoute,
   AppBoardBoardIdRoute: AppBoardBoardIdRoute,

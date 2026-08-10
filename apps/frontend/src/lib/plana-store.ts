@@ -1,6 +1,24 @@
 import { create } from "zustand";
 import * as api from "./api";
-import type { Board, BoardDetail, Comment, Issue, Member, Organization, Role } from "./plana-types";
+import type {
+  Board,
+  BoardDetail,
+  Comment,
+  Invitation,
+  Issue,
+  Member,
+  Organization,
+  Role,
+} from "./plana-types";
+
+export type RealtimeStatus = "off" | "connecting" | "connected" | "disconnected";
+
+export type AppNotification = {
+  id: string;
+  text: string;
+  at: number;
+  read: boolean;
+};
 
 type IssuePatch = {
   title?: string;
@@ -23,6 +41,10 @@ type PlanaState = {
   commentsIssueId: string | null;
   flash: string[];
   error: string | null;
+  notifications: AppNotification[];
+  realtimeStatus: RealtimeStatus;
+  invitations: Invitation[];
+  invitationsLoading: boolean;
 
   loadOrgs: () => Promise<void>;
   createOrg: (data: {
@@ -47,6 +69,10 @@ type PlanaState = {
   changeMemberRole: (orgId: string, userId: string, role: Role) => Promise<void>;
   removeMember: (orgId: string, userId: string) => Promise<void>;
 
+  loadInvitations: () => Promise<void>;
+  acceptInvitation: (id: string) => Promise<Organization>;
+  declineInvitation: (id: string) => Promise<void>;
+
   loadBoard: (boardId: string) => Promise<void>;
   createSection: (boardId: string, title: string) => Promise<void>;
   renameSection: (sectionId: string, title: string) => Promise<void>;
@@ -65,6 +91,9 @@ type PlanaState = {
   deleteComment: (id: string) => Promise<void>;
 
   flashIssue: (id: string) => void;
+  setRealtimeStatus: (status: RealtimeStatus) => void;
+  pushNotification: (n: { text: string }) => void;
+  markNotificationsRead: () => void;
 };
 
 const errMessage = (e: unknown) =>
@@ -84,6 +113,10 @@ export const usePlana = create<PlanaState>()((set, get) => ({
   commentsIssueId: null,
   flash: [],
   error: null,
+  notifications: [],
+  realtimeStatus: "off",
+  invitations: [],
+  invitationsLoading: false,
 
   loadOrgs: async () => {
     set({ orgsLoading: true, error: null });
@@ -167,6 +200,27 @@ export const usePlana = create<PlanaState>()((set, get) => ({
   removeMember: async (orgId, userId) => {
     await api.removeMember(orgId, userId);
     await get().loadMembers(orgId);
+  },
+
+  loadInvitations: async () => {
+    set({ invitationsLoading: true, error: null });
+    try {
+      const { invitations } = await api.listInvitations();
+      set({ invitations, invitationsLoading: false });
+    } catch (e) {
+      set({ invitationsLoading: false, error: errMessage(e) });
+    }
+  },
+
+  acceptInvitation: async (id) => {
+    const { organization } = await api.acceptInvitation(id);
+    await Promise.all([get().loadInvitations(), get().loadOrgs()]);
+    return organization;
+  },
+
+  declineInvitation: async (id) => {
+    await api.declineInvitation(id);
+    await get().loadInvitations();
   },
 
   loadBoard: async (boardId) => {
@@ -265,6 +319,27 @@ export const usePlana = create<PlanaState>()((set, get) => ({
     window.setTimeout(() => {
       set({ flash: get().flash.filter((f) => f !== id) });
     }, 1600);
+  },
+
+  setRealtimeStatus: (status) => set({ realtimeStatus: status }),
+
+  pushNotification: (n) => {
+    set({
+      notifications: [
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+          ...n,
+          at: Date.now(),
+          read: false,
+        },
+        ...get().notifications,
+      ].slice(0, 50),
+    });
+  },
+
+  markNotificationsRead: () => {
+    if (get().notifications.every((n) => n.read)) return;
+    set({ notifications: get().notifications.map((n) => ({ ...n, read: true })) });
   },
 }));
 

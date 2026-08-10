@@ -3,7 +3,7 @@ import { AuthPage } from "@/components/auth/AuthPage";
 
 export const Route = createFileRoute("/login")({
   head: () => ({
-    meta: [{ title: "Sign in — Plana" }, { name: "description", content: "Sign in to Plana." }],
+    meta: [{ title: "Plana" }, { name: "description", content: "Sign in to Plana." }],
   }),
   component: LoginPage,
 });

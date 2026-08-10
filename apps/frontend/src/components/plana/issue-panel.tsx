@@ -2,6 +2,7 @@ import { MoreHorizontal, Send, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { usePlana } from "@/lib/plana-store";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PRIORITIES, atLeast, priorityColor } from "@/lib/plana-types";
 import type { Issue, Priority, Role } from "@/lib/plana-types";
 import {
@@ -44,6 +45,7 @@ export function IssuePanel({
   const [editValue, setEditValue] = useState("");
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     setTitle(issue.title);
@@ -90,7 +92,6 @@ export function IssuePanel({
   };
 
   const removeIssue = async () => {
-    if (!window.confirm("Delete this card?")) return;
     setError(null);
     try {
       await deleteIssue(issue.id);
@@ -136,7 +137,7 @@ export function IssuePanel({
                 <div className="fade-up absolute right-0 z-10 mt-1 w-36 rounded-lg border border-border bg-popover p-1 shadow-panel">
                   <button
                     className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive-soft"
-                    onClick={() => void removeIssue()}
+                    onClick={() => setConfirmDelete(true)}
                   >
                     <Icon icon={Trash2} /> Delete card
                   </button>
@@ -257,7 +258,7 @@ export function IssuePanel({
             <div className="space-y-4">
               {comments.length === 0 && (
                 <p className="text-sm text-muted-foreground">
-                  No comments yet — start the thread below.
+                  No comments yet. Start the thread below.
                 </p>
               )}
               {comments.map((c) => {
@@ -370,6 +371,14 @@ export function IssuePanel({
           </PrimaryButton>
         </footer>
       </aside>
+
+      <ConfirmDialog
+        open={confirmDelete}
+        onOpenChange={setConfirmDelete}
+        title="Delete this card?"
+        description="This cannot be undone."
+        onConfirm={removeIssue}
+      />
     </div>
   );
 }

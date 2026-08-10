@@ -35,6 +35,20 @@ model Organization {
 
   memberships Membership[]
   boards      Board[]
+  invitations Invitation[]
+}
+
+model Invitation {
+  id             String       @id @default(uuid())
+  organizationId String
+  email          String
+  role           UserRole     @default(MEMBER)
+  createdAt      DateTime     @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+  @@index([email])
 }
 
 model Membership {

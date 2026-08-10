@@ -1,4 +1,5 @@
 import pg from "pg";
+import type { ServerWebSocket } from "bun";
 import { getJwtSecret } from "./src/auth";
 import { decideUpgrade } from "./src/request";
 import { isBoardMember } from "./src/access";
@@ -34,47 +35,72 @@ export const server = Bun.serve<ServerData>({
       : new Response("Upgrade failed", { status: 500 });
   },
   websocket: {
-    open(ws) {
+    open(ws: ServerWebSocket<ServerData>) {
       addSocket(ws);
     },
     message() {
       // subscription is fixed to ?boardId= at connect; messages are ignored
     },
-    close(ws) {
+    close(ws: ServerWebSocket<ServerData>) {
       removeSocket(ws);
     },
   },
 });
 
 const startListener = async () => {
-  const client = new pg.Client({
-    connectionString: process.env.DATABASE_URL,
-  });
-  client.on("error", (error) => {
-    console.error("Realtime pg client error:", error);
-  });
-  await client.connect();
-  await client.query("LISTEN board_events");
+  let retries = 0;
+
+  const listen = async () => {
+    const client = new pg.Client({
+      connectionString: process.env.DATABASE_URL,
+    });
+    let reconnecting = false;
+
+    const reconnect = () => {
+      if (reconnecting) return;
+      reconnecting = true;
+      client.removeAllListeners();
+      client.end().catch(() => {});
+      const delay = Math.min(1000 * 2 ** retries, 15000);
+      retries += 1;
+      setTimeout(() => void listen(), delay);
+    };
+
+    client.on("error", (error) => {
+      console.error("Realtime pg client error:", error.message);
+      reconnect();
+    });
+    client.on("notification", (notification) => {
+      if (notification.channel !== "board_events" || !notification.payload) {
+        return;
+      }
+      try {
+        const parsed = JSON.parse(notification.payload) as {
+          boardId?: string;
+        };
+        if (parsed.boardId) {
+          relayToBoard(parsed.boardId, notification.payload);
+        }
+      } catch {
+        // ignore malformed payloads
+      }
+    });
+
+    try {
+      await client.connect();
+      await client.query("LISTEN board_events");
+      retries = 0;
+    } catch (error) {
+      console.error("Realtime listener connect failed:", (error as Error).message);
+      reconnect();
+    }
+  };
+
+  await listen();
 
   console.log(
     `Realtime server on ws://localhost:${server.port}/ws (LISTEN board_events)`,
   );
-
-  client.on("notification", (notification) => {
-    if (notification.channel !== "board_events" || !notification.payload) {
-      return;
-    }
-    try {
-      const parsed = JSON.parse(notification.payload) as {
-        boardId?: string;
-      };
-      if (parsed.boardId) {
-        relayToBoard(parsed.boardId, notification.payload);
-      }
-    } catch {
-      // ignore malformed payloads
-    }
-  });
 };
 
 getJwtSecret();

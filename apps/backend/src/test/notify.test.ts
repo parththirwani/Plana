@@ -59,4 +59,63 @@ describe("notifyBoard", () => {
         await notifyBoard("brd_1", "issue.updated", "nobody");
         expect(notifications).toHaveLength(0);
     });
+
+    test("shrinks oversized payloads to a needsRefetch marker", async () => {
+        await notifyBoard("brd_1", "issue.updated", "alice", {
+            issue: {
+                id: "iss_1",
+                title: "Login",
+                description: "x".repeat(9000),
+            },
+        });
+
+        expect(notifications).toHaveLength(1);
+        const payload = JSON.parse(notifications[0]!.payload);
+        expect(payload.data).toMatchObject({
+            needsRefetch: true,
+            issue: { id: "iss_1", title: "Login" },
+        });
+        expect(JSON.stringify(payload).length).toBeLessThan(1000);
+    });
+
+    test("caps the marker even when the title itself exceeds the limit", async () => {
+        await notifyBoard("brd_1", "issue.updated", "alice", {
+            issue: {
+                id: "iss_1",
+                title: "y".repeat(9000),
+            },
+        });
+
+        expect(notifications).toHaveLength(1);
+        const payload = JSON.parse(notifications[0]!.payload);
+        expect(payload.data.needsRefetch).toBe(true);
+        expect(payload.data.issue.title.length).toBeLessThanOrEqual(120);
+        expect(Buffer.byteLength(notifications[0]!.payload)).toBeLessThan(7999);
+    });
+
+    test("never sends a payload that exceeds the NOTIFY limit, even with a huge actor name", async () => {
+        const big = "n".repeat(7900);
+        setNotifyActorLoader(async () => ({
+            id: "alice",
+            name: big,
+            avatarUrl: null,
+        }));
+        await notifyBoard("brd_1", "issue.created", "alice", {
+            issue: { id: "iss_1", title: "Login" },
+        });
+        setNotifyActorLoader(async (id) =>
+            id === "alice"
+                ? {
+                      id: "alice",
+                      name: "Alice",
+                      avatarUrl: "https://example.com/avatar.png",
+                  }
+                : null
+        );
+
+        expect(notifications).toHaveLength(1);
+        const payload = JSON.parse(notifications[0]!.payload);
+        expect(payload.data.needsRefetch).toBe(true);
+        expect(Buffer.byteLength(notifications[0]!.payload)).toBeLessThan(7999);
+    });
 });

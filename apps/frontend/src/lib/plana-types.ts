@@ -36,6 +36,15 @@ export interface Member {
   user: User;
 }
 
+export interface Invitation {
+  id: string;
+  organizationId: string;
+  organizationName: string;
+  organizationImage: string | null;
+  role: Role;
+  createdAt: string;
+}
+
 export interface Board {
   id: string;
   title: string;

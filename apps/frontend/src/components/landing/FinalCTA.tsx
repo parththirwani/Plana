@@ -44,10 +44,14 @@ export function Footer() {
         <div className="grid gap-10 md:grid-cols-[1.4fr_2fr]">
           <div>
             <div className="flex items-center gap-2">
-              <span className="grid size-7 place-items-center rounded-lg bg-accent text-[13px] font-bold text-accent-foreground">
-                P
-              </span>
-              <span className="text-[15px] font-semibold tracking-tight">Plana</span>
+              <img
+                src="/logo-with-text.png"
+                alt="Plana"
+                width={822}
+                height={299}
+                decoding="async"
+                className="h-7 w-auto"
+              />
             </div>
             <p className="mt-3 max-w-xs text-sm text-muted-foreground">
               A calmer way to plan, organize, and ship work together.

@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 export const Route = createFileRoute("/onboarding")({
   head: () => ({
     meta: [
-      { title: "Set up your profile — Plana" },
+      { title: "Plana" },
       { name: "description", content: "Tell us your name to finish setting up Plana." },
     ],
   }),
@@ -68,7 +68,7 @@ function Onboarding() {
         <Card>
           <CardHeader>
             <CardTitle>Set up your profile</CardTitle>
-            <CardDescription>One last step — what should your team call you?</CardDescription>
+            <CardDescription>One last step: what should your team call you?</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">

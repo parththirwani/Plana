@@ -75,7 +75,7 @@ function DetailMock() {
         <div className="mt-5 space-y-3 border-t border-border pt-4">
           {[
             ["MK", "Columns feel much calmer now. Moving to review."],
-            ["JT", "Nice — I'll take a look before standup."],
+            ["JT", "Nice I'll take a look before standup."],
           ].map(([i, t]) => (
             <div key={t} className="flex gap-3">
               <span className="grid size-6 shrink-0 place-items-center rounded-full bg-muted text-[10px] font-semibold text-muted-foreground">

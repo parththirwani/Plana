@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { LayoutGrid, Plus, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AppShell } from "@/components/plana/app-shell";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   DashedTile,
   EmptyState,
@@ -21,9 +22,9 @@ import { Authed } from "@/lib/auth-guard";
 export const Route = createFileRoute("/app/org/$orgId/")({
   head: () => ({
     meta: [
-      { title: "Boards — Plana" },
+      { title: "Plana" },
       { name: "description", content: "All boards in this Plana organization." },
-      { property: "og:title", content: "Boards — Plana" },
+      { property: "og:title", content: "Boards · Plana" },
       { property: "og:description", content: "All boards in this Plana organization." },
     ],
   }),
@@ -52,6 +53,11 @@ function BoardsList() {
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
   const [createError, setCreateError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    description?: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
 
   useEffect(() => {
     void loadBoards(orgId);
@@ -97,7 +103,6 @@ function BoardsList() {
   };
 
   const remove = async (boardId: string) => {
-    if (!window.confirm("Delete this board? This cannot be undone.")) return;
     try {
       await deleteBoard(boardId);
       await loadBoards(orgId);
@@ -207,7 +212,11 @@ function BoardsList() {
                     aria-label={`Delete ${board.title}`}
                     onClick={(e) => {
                       e.stopPropagation();
-                      void remove(board.id);
+                      setConfirm({
+                        title: "Delete this board?",
+                        description: "This cannot be undone.",
+                        onConfirm: () => remove(board.id),
+                      });
                     }}
                   >
                     <Icon icon={Trash2} />
@@ -229,6 +238,18 @@ function BoardsList() {
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirm !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirm(null);
+        }}
+        title={confirm?.title ?? ""}
+        description={confirm?.description}
+        onConfirm={() => {
+          confirm?.onConfirm();
+        }}
+      />
     </AppShell>
   );
 }

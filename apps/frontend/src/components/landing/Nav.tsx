@@ -30,7 +30,6 @@ export function Nav() {
 
   const ready = status === "authenticated" || status === "unauthenticated";
   const authenticated = status === "authenticated" && user;
-  const initials = user ? (user.name?.[0] ?? user.email[0]?.toUpperCase() ?? "?") : "?";
 
   return (
     <header
@@ -42,12 +41,16 @@ export function Nav() {
       )}
     >
       <nav className="container-page flex h-16 items-center justify-between gap-4">
-        <a href="#top" className="flex items-center gap-2">
-          <span className="grid size-7 place-items-center rounded-lg bg-accent text-[13px] font-bold text-accent-foreground">
-            P
-          </span>
-          <span className="text-[15px] font-semibold tracking-tight">Plana</span>
-        </a>
+        <Link to="/" className="flex items-center gap-2">
+          <img
+            src="/logo-with-text.png"
+            alt="Plana"
+            width={822}
+            height={299}
+            decoding="async"
+            className="h-7 w-auto"
+          />
+        </Link>
 
         <div className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-8 md:flex">
           {links.map((l) => (
@@ -66,12 +69,9 @@ export function Nav() {
             (authenticated ? (
               <Link
                 to="/app"
-                className="flex items-center gap-2 rounded-lg py-1.5 pl-1.5 pr-3 transition-colors duration-150 hover:bg-accent"
+                className="relative px-3 py-2 text-sm font-medium text-foreground after:absolute after:inset-x-3 after:bottom-0 after:h-[2px] after:origin-left after:scale-x-0 after:bg-accent after:transition-transform after:duration-200 hover:after:scale-x-100"
               >
-                <span className="grid size-7 place-items-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
-                  {initials}
-                </span>
-                <span className="text-sm font-medium text-foreground">Open app</span>
+                Open app
               </Link>
             ) : (
               <>

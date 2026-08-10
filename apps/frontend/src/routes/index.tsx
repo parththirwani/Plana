@@ -9,7 +9,7 @@ import { Testimonials } from "@/components/landing/Testimonials";
 import { Pricing } from "@/components/landing/Pricing";
 import { FinalCTA, Footer } from "@/components/landing/FinalCTA";
 
-const title = "Plana — The clearest way to plan your team's work";
+const title = "Plana";
 const description =
   "Plana brings every project, task, and teammate into one calm, organized view. Boards, cards, and a workspace that feels effortless.";
 

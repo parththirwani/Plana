@@ -127,7 +127,24 @@ const main = async () => {
         cookieA,
       ),
       201,
-      "invite member B",
+      "invite member B (pending)",
+    );
+
+    const invitesRes = expectStatus(
+      await http.get("/api/v1/invitations", cookieB),
+      200,
+      "member B lists invitations",
+    );
+    const invites = ((await invitesRes.json()) as any).invitations as any[];
+    check(invites.length === 1, "member B sees one pending invitation");
+    expectStatus(
+      await http.post(
+        `/api/v1/invitations/${invites[0].id}/accept`,
+        {},
+        cookieB,
+      ),
+      200,
+      "member B accepts the invitation",
     );
 
     console.log("access control");
@@ -346,6 +363,138 @@ const main = async () => {
         }
       }),
       "socket A receives issue.updated relayed with actor B",
+    );
+
+    const waitFor = (pred: (m: string) => boolean) =>
+      new Promise<void>((resolve) => {
+        const poll = setInterval(() => {
+          if (received.some(pred)) {
+            clearInterval(poll);
+            resolve();
+          }
+        }, 25);
+        setTimeout(() => {
+          clearInterval(poll);
+          resolve();
+        }, 4000);
+      });
+    const has = (pred: (p: any) => boolean) =>
+      received.some((m) => {
+        try {
+          return pred(JSON.parse(m));
+        } catch {
+          return false;
+        }
+      });
+
+    expectStatus(
+      await http.patch(
+        `/api/v1/issues/${i1}`,
+        { priority: "URGENT" },
+        cookieB,
+      ),
+      200,
+      "member B changes priority (urgency)",
+    );
+    await waitFor((m) => m.includes('"URGENT"'));
+    check(
+      has((p) => p.event === "issue.updated" && p.data?.issue?.priority === "URGENT"),
+      "priority change relays issue.updated in realtime",
+    );
+
+    expectStatus(
+      await http.patch(
+        `/api/v1/issues/${i1}`,
+        { description: "d".repeat(2000) },
+        cookieB,
+      ),
+      200,
+      "member B sets a long description",
+    );
+    await waitFor((m) => m.includes("d".repeat(500)));
+    check(
+      has(
+        (p) =>
+          p.event === "issue.updated" &&
+          p.data?.issue?.description?.length === 2000,
+      ),
+      "description edit relays issue.updated in realtime",
+    );
+
+    const createdRes = expectStatus(
+      await http.post(
+        `/api/v1/sections/${s1}/issues`,
+        { title: "Realtime Created" },
+        cookieB,
+      ),
+      201,
+      "member B creates an issue",
+    );
+    const createdId = ((await createdRes.json()) as any).issue.id as string;
+    await waitFor((m) => m.includes('"issue.created"'));
+    check(
+      has(
+        (p) =>
+          p.event === "issue.created" &&
+          p.data?.sectionTitle === "To Do",
+      ),
+      "issue.created payload carries the section name",
+    );
+
+    expectStatus(
+      await http.post(
+        `/api/v1/issues/${createdId}/move`,
+        { sectionId: s2, order: 0 },
+        cookieB,
+      ),
+      200,
+      "member B moves the issue",
+    );
+    await waitFor((m) => m.includes('"issue.moved"'));
+    check(
+      has(
+        (p) =>
+          p.event === "issue.moved" &&
+          p.data?.fromSectionTitle === "To Do" &&
+          p.data?.toSectionTitle === "Done",
+      ),
+      "issue.moved payload carries from/to section names",
+    );
+
+    // A pathologically long avatarUrl used to make the notify payload exceed
+    // the 8 KB NOTIFY cap, killing the whole realtime channel. The guard must
+    // degrade to a needsRefetch marker instead of crashing.
+    expectStatus(
+      await http.put(
+        "/api/v1/profile",
+        { avatarUrl: `https://example.com/av/${"a".repeat(7800)}` },
+        cookieB,
+      ),
+      200,
+      "member B sets an oversized avatarUrl",
+    );
+    expectStatus(
+      await http.patch(
+        `/api/v1/issues/${i1}`,
+        { description: "edge" },
+        cookieB,
+      ),
+      200,
+      "member B updates an issue after the oversized avatar",
+    );
+    await waitFor((m) => m.includes('"needsRefetch"'));
+    check(
+      has(
+        (p) =>
+          p.event === "issue.updated" &&
+          p.data?.needsRefetch === true &&
+          p.actor?.avatarUrl === undefined,
+      ),
+      "oversized notify payload degrades to a needsRefetch marker, not a crash",
+    );
+    check(
+      received.every((m) => Buffer.byteLength(m) < 7999),
+      "every relayed payload stays under the 8 KB NOTIFY cap",
     );
 
     sockA.close();
