@@ -1,34 +1,17 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
-import { GlyphPriority } from "./Glyphs";
-
-type Tone = "high" | "medium" | "low";
+import { TaskCard, DemoAvatar } from "./TaskCard";
 
 type Card = {
   id: string;
   title: string;
-  tone: Tone;
+  tone: "high" | "medium" | "low";
   label: string;
   people: string[];
 };
 
 type Column = { id: string; title: string; cards: Card[] };
-
-const toneClass: Record<Tone, string> = {
-  high: "border-rose-200/70 text-rose-600",
-  medium: "border-accent/25 text-accent",
-  low: "border-border text-muted-foreground",
-};
-
-const toneLevel: Record<Tone, 1 | 2 | 3> = { low: 1, medium: 2, high: 3 };
-
-const avatarTone = [
-  "bg-accent/10 text-accent border-accent/20",
-  "bg-emerald-50 text-emerald-700 border-emerald-200/70",
-  "bg-amber-50 text-amber-700 border-amber-200/70",
-  "bg-sky-50 text-sky-700 border-sky-200/70",
-];
 
 const initialColumns: Column[] = [
   {
@@ -70,49 +53,14 @@ const initialColumns: Column[] = [
   },
 ];
 
-function Avatar({ initials, index }: { initials: string; index: number }) {
-  return (
-    <span
-      className={cn(
-        "grid size-6 shrink-0 place-items-center rounded-full border text-[10px] font-medium",
-        "ring-2 ring-white",
-        avatarTone[index % avatarTone.length],
-      )}
-    >
-      {initials}
-    </span>
-  );
-}
-
 function CardBody({ card, dragging }: { card: Card; dragging?: boolean }) {
   return (
-    <div
-      className={cn(
-        "select-none rounded-xl border border-border bg-white p-3 transition-shadow duration-200",
-        dragging ? "shadow-lifted" : "shadow-hair hover:shadow-soft",
-      )}
-    >
-      <span
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-lg border px-1.5 py-0.5 text-[10px] font-medium",
-          toneClass[card.tone],
-        )}
-      >
-        <span className="size-3">
-          <GlyphPriority level={toneLevel[card.tone]} strokeWidth={2.25} />
-        </span>
-        {card.label}
-      </span>
-      <p className="mt-2 text-[13px] font-medium leading-snug text-foreground">{card.title}</p>
-      <div className="mt-3 flex items-center justify-between">
-        <div className="flex -space-x-2">
-          {card.people.map((p, i) => (
-            <Avatar key={p} initials={p} index={i} />
-          ))}
-        </div>
-        <span className="h-1 w-8 rounded-full bg-muted" />
-      </div>
-    </div>
+    <TaskCard
+      title={card.title}
+      tag={{ label: card.label, tone: card.tone }}
+      people={card.people}
+      dragging={dragging ?? false}
+    />
   );
 }
 
@@ -298,7 +246,7 @@ export function KanbanDemo() {
   let order = 0;
 
   return (
-    <div className="relative bg-white p-4 sm:p-6">
+    <div className="relative overflow-x-auto bg-white p-4 sm:p-6">
       <div className="mb-5 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold tracking-tight">Product</p>
@@ -306,12 +254,12 @@ export function KanbanDemo() {
         </div>
         <div className="flex -space-x-2">
           {["JT", "AR", "MK", "SL"].map((p, i) => (
-            <Avatar key={p} initials={p} index={i} />
+            <DemoAvatar key={p} initials={p} index={i} />
           ))}
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 sm:gap-4">
+      <div className="grid grid-cols-[repeat(3,minmax(200px,1fr))] gap-3 sm:gap-5">
         {columns.map((col) => (
           <div
             key={col.id}
@@ -319,7 +267,7 @@ export function KanbanDemo() {
               if (el) colEls.current.set(col.id, el);
               else colEls.current.delete(col.id);
             }}
-            className="rounded-xl bg-background/80 p-2 sm:p-2.5"
+            className="rounded-xl bg-background/80 p-2.5 sm:p-3"
           >
             <div className="mb-2 flex items-center justify-between px-1">
               <span className="flex min-w-0 items-center gap-1.5">
@@ -334,7 +282,7 @@ export function KanbanDemo() {
               <span className="text-[11px] text-muted-foreground">{col.cards.length}</span>
             </div>
 
-            <div className="min-h-[180px] space-y-2">
+            <div className="min-h-[180px] space-y-3">
               {col.cards.map((card, i) => {
                 const showGap = drag && drag.targetCol === col.id && drag.targetIndex === i;
                 const delay = (order += 1) * 60;
@@ -343,7 +291,7 @@ export function KanbanDemo() {
                     {showGap && (
                       <div
                         style={{ height: drag.height }}
-                        className="mb-2 rounded-xl border border-dashed border-accent/30 bg-accent-soft/40"
+                        className="rounded-xl border border-dashed border-accent/30 bg-accent-soft/40"
                       />
                     )}
                     <div

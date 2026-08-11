@@ -24,18 +24,20 @@ export function HowItWorks() {
             Up and running in three steps.
           </h2>
         </Reveal>
-        <div className="mt-14 grid gap-10 md:grid-cols-3 md:gap-8">
+        <div className="mt-14 grid gap-12 md:grid-cols-3 md:gap-8">
           {steps.map((s, i) => (
             <Reveal key={s.title} delay={i * 90}>
-              <div className="relative border-t border-border pt-8">
-                <span
-                  aria-hidden
-                  className="pointer-events-none absolute -top-2 right-2 select-none text-[7rem] font-semibold leading-none tracking-tighter text-foreground/[0.045]"
-                >
-                  {i + 1}
-                </span>
-                <h3 className="relative text-lg font-semibold tracking-tight">{s.title}</h3>
-                <p className="relative mt-2 max-w-xs text-sm leading-relaxed text-muted-foreground">
+              <div className="relative border-t border-border px-4 pt-8 sm:px-6 sm:pt-10">
+                <div className="flex items-baseline gap-5 sm:gap-4">
+                  <h3 className="text-lg font-semibold tracking-tight">{s.title}</h3>
+                  <span
+                    aria-hidden
+                    className="shrink-0 select-none text-[3.5rem] font-semibold leading-none tracking-tighter text-foreground/15 sm:text-[4.5rem]"
+                  >
+                    {i + 1}
+                  </span>
+                </div>
+                <p className="mt-2 max-w-xs text-sm leading-relaxed text-muted-foreground">
                   {s.body}
                 </p>
               </div>

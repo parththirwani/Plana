@@ -1,69 +1,19 @@
 import { cn } from "@/lib/utils";
-import { GlyphPriority } from "./Glyphs";
-
-type Tone = "urgent" | "high" | "medium" | "low";
+import { TaskCard, DemoAvatar } from "./TaskCard";
 
 type Card = {
   title: string;
-  tag?: { label: string; tone: Tone };
+  tag?: { label: string; tone: "urgent" | "high" | "medium" | "low" };
   people?: string[];
 };
 
-const toneClass: Record<Tone, string> = {
-  urgent: "border-rose-200/70 text-rose-600",
-  high: "border-amber-200/80 text-amber-700",
-  medium: "border-accent/25 text-accent",
-  low: "border-border text-muted-foreground",
-};
-
-const toneLevel: Record<Tone, 1 | 2 | 3> = { urgent: 3, high: 3, medium: 2, low: 1 };
-
-const avatarTone = [
-  "bg-accent/10 text-accent border-accent/20",
-  "bg-emerald-50 text-emerald-700 border-emerald-200/70",
-  "bg-amber-50 text-amber-700 border-amber-200/70",
-  "bg-sky-50 text-sky-700 border-sky-200/70",
-];
-
-function Avatar({ initials, i }: { initials: string; i: number }) {
-  return (
-    <span
-      className={cn(
-        "grid size-6 shrink-0 place-items-center rounded-full border text-[10px] font-medium ring-2 ring-white",
-        avatarTone[i % avatarTone.length],
-      )}
-    >
-      {initials}
-    </span>
-  );
-}
-
 function IssueCard({ card }: { card: Card }) {
   return (
-    <div className="rounded-xl border border-border bg-white p-3 shadow-hair transition-shadow duration-200 hover:shadow-soft">
-      {card.tag && (
-        <span
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-lg border px-1.5 py-0.5 text-[10px] font-medium",
-            toneClass[card.tag.tone],
-          )}
-        >
-          <span className="size-3">
-            <GlyphPriority level={toneLevel[card.tag.tone]} strokeWidth={2.25} />
-          </span>
-          {card.tag.label}
-        </span>
-      )}
-      <p className="mt-2 text-[13px] font-medium leading-snug text-foreground">{card.title}</p>
-      <div className="mt-3 flex items-center justify-between">
-        <div className="flex -space-x-2">
-          {(card.people ?? []).map((p, i) => (
-            <Avatar key={p} initials={p} i={i} />
-          ))}
-        </div>
-        <span className="h-1 w-8 rounded-full bg-muted" />
-      </div>
-    </div>
+    <TaskCard
+      title={card.title}
+      {...(card.tag ? { tag: card.tag } : {})}
+      {...(card.people ? { people: card.people } : {})}
+    />
   );
 }
 
@@ -138,8 +88,11 @@ export function BrowserFrame({
 
 export function BoardMockup({ compact = false }: { compact?: boolean }) {
   const cols = compact ? columns.slice(0, 3) : columns;
+  const gridCols = compact
+    ? "grid-cols-[repeat(2,minmax(200px,1fr))] sm:grid-cols-[repeat(3,minmax(200px,1fr))]"
+    : "grid-cols-[repeat(2,minmax(200px,1fr))] sm:grid-cols-[repeat(3,minmax(200px,1fr))] md:grid-cols-[repeat(4,minmax(200px,1fr))]";
   return (
-    <div className="bg-white p-4 sm:p-6">
+    <div className="overflow-x-auto bg-white p-4 sm:p-6">
       <div className="mb-4 flex items-center justify-between">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold tracking-tight">Product</p>
@@ -147,13 +100,13 @@ export function BoardMockup({ compact = false }: { compact?: boolean }) {
         </div>
         <div className="flex -space-x-2">
           {["JT", "AR", "MK", "SL"].map((p, i) => (
-            <Avatar key={p} initials={p} i={i} />
+            <DemoAvatar key={p} initials={p} index={i} />
           ))}
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-4">
+      <div className={cn("grid", gridCols, "gap-4 sm:gap-5")}>
         {cols.map((c) => (
-          <div key={c.name} className="rounded-xl bg-background/80 p-2.5">
+          <div key={c.name} className="rounded-xl bg-background/80 p-3">
             <div className="mb-2 flex items-center justify-between px-1">
               <span className="flex min-w-0 items-center gap-1.5">
                 <span className="h-3 w-[3px] shrink-0 rounded-full bg-border" />
@@ -161,7 +114,7 @@ export function BoardMockup({ compact = false }: { compact?: boolean }) {
               </span>
               <span className="text-[11px] text-muted-foreground">{c.count}</span>
             </div>
-            <div className="space-y-2">
+            <div className="space-y-3">
               {c.cards.map((card) => (
                 <IssueCard key={card.title} card={card} />
               ))}

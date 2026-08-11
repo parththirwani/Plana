@@ -32,8 +32,6 @@ Two CTAs: primary "Get started free" (accent, filled), secondary "See how it wor
 
 Below the fold of the hero: a large product screenshot/mockup of the kanban board (columns = sections, draggable cards = issues, avatar chips for assignees, priority tags). Use a bento/browser-chrome frame with soft shadow and slight perspective tilt on scroll.
 
-Logo strip — "Trusted by teams at" with a muted grayscale marquee of placeholder logos.
-
 Feature bento grid (3–4 cards, Aceternity-style bento layout, one larger hero card + smaller supporting cards):
 
 Kanban boards — drag-and-drop sections and issues, reorder columns, live sync across the team.
