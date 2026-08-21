@@ -31,6 +31,54 @@ const commentWithAuthor = async (id: string) =>
         include: { author: true },
     });
 
+// ponytail: one magic-email global bot. Multi-bot / org-scoped agents would
+// need a `kind` enum column on User; upgrade when that's actually wanted.
+const ensureAgent = async () => {
+    const email = "plana-agent@plana.ai";
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) return existing;
+    return prisma.user.create({
+        data: { email, password: crypto.randomUUID(), name: "Plana Agent" },
+    });
+};
+
+// ponytail: synchronous single request, no stream/retry. Add streaming when
+// prompt latency or token-usage cost makes the wait and truncation hurt.
+const askAgent = async (title: string, description: string | null): Promise<string> => {
+    const key = process.env.OPENROUTER_API_KEY;
+    if (!key) return "Plana Agent isn't configured (missing OPENROUTER_API_KEY).";
+    try {
+        const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${key}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                model: process.env.OPENROUTER_MODEL ?? "openrouter/auto",
+                messages: [
+                    {
+                        role: "user",
+                        content:
+                            `Explain this task so a new team member can start on it. ` +
+                            `Keep it under 1800 characters.\n\nTitle: ${title}\n` +
+                            `Description: ${description ?? "(none)"}`,
+                    },
+                ],
+            }),
+        });
+        if (!res.ok) {
+            console.error("OpenRouter error:", res.status);
+            return "The AI couldn't respond right now. Try again in a moment.";
+        }
+        const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+        return (data.choices?.[0]?.message?.content ?? "").slice(0, 2000).trim();
+    } catch (error) {
+        console.error("Askagent error:", error);
+        return "The AI Agent couldn't reach OpenRouter right now.";
+    }
+};
+
 const issueBoard = async (issueId: string) => {
     const issue = await prisma.issue.findUnique({ where: { id: issueId } });
     return issue ? boardForIssue(issue) : null;
@@ -146,6 +194,70 @@ router.get(
             });
         } catch (error) {
             console.error("List comments error:", error);
+            return res.status(500).json({ message: "Internal server error" });
+        }
+    }
+);
+
+router.post(
+    "/issues/:id/explain",
+    authMiddleware,
+    async (req: AuthenticatedRequest, res) => {
+        try {
+            if (!req.user) {
+                return res.status(401).json({ message: "Unauthorized" });
+            }
+
+            const issue = await prisma.issue.findUnique({
+                where: { id: req.params.id as string },
+            });
+            if (!issue) {
+                return res.status(404).json({ message: "Issue not found" });
+            }
+
+            const board = await boardForIssue(issue);
+            if (!board) {
+                return res.status(404).json({ message: "Board not found" });
+            }
+
+            const membership = await getMembership(
+                board.organizationId,
+                req.user.userId
+            );
+            if (!isAuthorized(membership, "MODERATOR")) {
+                return res.status(403).json({
+                    message: "Only admins and moderators can ask the Plana Agent",
+                });
+            }
+
+            const agent = await ensureAgent();
+            const content = await askAgent(issue.title, issue.description);
+            if (!content) {
+                return res.status(502).json({
+                    message: "The Plana Agent produced no explanation.",
+                });
+            }
+
+            const created = await prisma.comment.create({
+                data: {
+                    content,
+                    issueId: issue.id,
+                    authorId: agent.id,
+                },
+            });
+
+            const comment = await commentWithAuthor(created.id);
+
+            void notifyBoard(board.id, "comment.created", agent.id, {
+                comment: shapeComment(comment),
+            });
+
+            return res.status(201).json({
+                message: "Plana Agent explained the task",
+                comment: shapeComment(comment),
+            });
+        } catch (error) {
+            console.error("Ask agent error:", error);
             return res.status(500).json({ message: "Internal server error" });
         }
     }
