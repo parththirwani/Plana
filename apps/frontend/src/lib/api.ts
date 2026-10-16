@@ -239,6 +239,9 @@ export const createComment = (issueId: string, content: string) =>
 export const updateComment = (id: string, content: string) =>
   request<{ comment: Comment }>(`/comments/${id}`, { method: "PATCH", body: { content } });
 
+export const explainIssue = (issueId: string) =>
+  request<{ comment: Comment }>(`/issues/${issueId}/explain`, { method: "POST" });
+
 export const deleteComment = (id: string) =>
   request<Record<string, never>>(`/comments/${id}`, { method: "DELETE" });
 

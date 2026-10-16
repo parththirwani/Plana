@@ -89,6 +89,7 @@ type PlanaState = {
   addComment: (issueId: string, content: string) => Promise<void>;
   updateComment: (id: string, content: string) => Promise<void>;
   deleteComment: (id: string) => Promise<void>;
+  explain: (issueId: string) => Promise<void>;
 
   flashIssue: (id: string) => void;
   setRealtimeStatus: (status: RealtimeStatus) => void;
@@ -311,6 +312,11 @@ export const usePlana = create<PlanaState>()((set, get) => ({
     await api.deleteComment(id);
     const issueId = get().comments.find((c) => c.id === id)?.issueId;
     if (issueId) await get().loadComments(issueId);
+  },
+
+  explain: async (issueId) => {
+    await api.explainIssue(issueId);
+    await get().loadComments(issueId);
   },
 
   flashIssue: (id) => {

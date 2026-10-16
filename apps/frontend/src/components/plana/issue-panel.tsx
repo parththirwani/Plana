@@ -1,4 +1,4 @@
-import { MoreHorizontal, Send, Trash2, X } from "lucide-react";
+import { MoreHorizontal, Send, Sparkles, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { usePlana } from "@/lib/plana-store";
@@ -36,6 +36,7 @@ export function IssuePanel({
   const addComment = usePlana((s) => s.addComment);
   const updateComment = usePlana((s) => s.updateComment);
   const deleteComment = usePlana((s) => s.deleteComment);
+  const explain = usePlana((s) => s.explain);
   const currentUserId = useAuthStore((s) => s.user?.id);
   const canEdit = role !== null && atLeast(role, "MODERATOR");
   const [title, setTitle] = useState(issue.title);
@@ -46,6 +47,7 @@ export function IssuePanel({
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [asking, setAsking] = useState(false);
 
   useEffect(() => {
     setTitle(issue.title);
@@ -255,6 +257,20 @@ export function IssuePanel({
 
           <section>
             <p className="label-eyebrow mb-2">Comments</p>
+            {canEdit && (
+              <SecondaryButton
+                aria-label="Ask Plana Agent to explain this task"
+                disabled={asking}
+                className="mt-1 mb-2"
+                onClick={() => {
+                  setAsking(true);
+                  void tryAction(() => explain(issue.id).finally(() => setAsking(false)));
+                }}
+              >
+                <Icon icon={Sparkles} />
+                {asking ? "Asking Plana Agent…" : "Ask Plana Agent"}
+              </SecondaryButton>
+            )}
             <div className="space-y-4">
               {comments.length === 0 && (
                 <p className="text-sm text-muted-foreground">
