@@ -518,7 +518,14 @@ function BoardScreen() {
         </div>
       </div>
 
-      {issue && <IssuePanel issue={issue} role={role} onClose={() => setOpenIssue(null)} />}
+      {issue && (
+        <IssuePanel
+          issue={issue}
+          orgId={board.organizationId}
+          role={role}
+          onClose={() => setOpenIssue(null)}
+        />
+      )}
 
       <ConfirmDialog
         open={confirm !== null}

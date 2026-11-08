@@ -1,6 +1,6 @@
 # Cloud agents local foundation
 
-This implements implementation-sequence step 1 of [the architecture plan](cloud-agents-architecture.md). It runs simulated engines against persistent PostgreSQL jobs. Real engine, E2B, GitHub publisher, gateway, storage, budget enforcement, and agent UI integrations remain incomplete. A fake publication acknowledgement creates no GitHub branch or PR.
+This implements implementation-sequence step 1 of [the architecture plan](cloud-agents-architecture.md). It runs simulated engines against persistent PostgreSQL jobs. Real engine, E2B, GitHub publisher, gateway, storage, budget enforcement, and agent message composition remain incomplete. A fake publication acknowledgement creates no GitHub branch or PR.
 
 ## Start locally
 
@@ -29,10 +29,19 @@ Without explicit fake mode, capability discovery marks engines unavailable and t
 
 ## Configure and launch
 
-Create an account, organization, board, and card through the existing application. Use the normal authenticated cookie with these API endpoints:
+Create an account, organization, board, and card through the application.
+
+1. Open **Organization settings → Agents**. An admin can approve repositories and save the team default harness, model, and run mode. Each organization has its own policy. Defaults are suggestions for a new run, not a restriction to a single harness.
+2. Open a card and select **Agents**. Choose Codex, Claude Code, OpenCode, or Pi, an available model, supported options, an approved repository, and a run mode. Unavailable choices show the server reason. No engine or model is silently substituted.
+3. Admins and moderators can launch, approve/reject a persisted plan, cancel, or resume a blocked/limited run. Members can read plans and activity. Run history and sandbox lifecycle events come from the persisted API, with polling for updates and cleanup receipts.
+
+The UI uses locally served product logos, keyboard-accessible controls, team-scoped requests, and user-scoped query caches. Simulation notices remain visible; a successful fake run does not provision E2B, call a model provider, or create a real GitHub PR. Start the worker separately as described above.
+
+The same operations are available through the normal authenticated API:
 
 | Method and path | Required role | Body |
 | --- | --- | --- |
+| `GET /api/v1/organizations/:id/agent-config` | Member | Team policy, engine capabilities and simulation status |
 | `PUT /api/v1/organizations/:id/agent-config` | Admin | `{"allowedRepositories":["example/demo"]}` |
 | `PATCH /api/v1/boards/:id/agent-repository` | Moderator/admin | `{"repository":"example/demo"}` |
 | `PATCH /api/v1/issues/:id/agent-repository` | Moderator/admin | The same body, or `{"repository":null}` to clear the override |

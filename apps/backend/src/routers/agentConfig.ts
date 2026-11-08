@@ -4,6 +4,7 @@ import { z } from "zod";
 import { authMiddleware, type AuthenticatedRequest } from "../middleware/auth";
 import { getMembership, isAuthorized } from "./organization";
 import { boardForIssue } from "./issue";
+import { listEngineSpecs, validateRunSelection } from "../adapters/capabilities";
 const repository = z
     .string()
     .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/)
@@ -25,6 +26,28 @@ const config = z
     .strict();
 const selection = z.object({ repository: repository.nullable() }).strict();
 const router = Router();
+router.get(
+    "/organizations/:id/agent-config",
+    authMiddleware,
+    async (req: AuthenticatedRequest, res) => {
+        try {
+            const organizationId = req.params.id as string;
+            const membership = await getMembership(organizationId, req.user!.userId);
+            if (!membership || !isAuthorized(membership, "MEMBER"))
+                return res.status(403).json({ message: "Only organization members can view agent policy" });
+            const agentConfig = await prisma.organizationAgentConfig.findUnique({ where: { organizationId } });
+            return res.status(200).json({
+                message: "Agent policy fetched",
+                config: agentConfig,
+                engines: listEngineSpecs(),
+                simulation: process.env.AGENT_EXECUTION_MODE === "fake",
+            });
+        } catch (error) {
+            console.error("Agent policy fetch failed", error);
+            return res.status(500).json({ message: "Internal server error" });
+        }
+    },
+);
 router.put(
     "/organizations/:id/agent-config",
     authMiddleware,
@@ -46,10 +69,24 @@ router.put(
                 return res
                     .status(400)
                     .json({ message: "Fields not according to schema" });
+            const existing = await prisma.organizationAgentConfig.findUnique({ where: { organizationId } });
+            const engine = body.data.defaultEngine === undefined ? existing?.defaultEngine : body.data.defaultEngine;
+            const model = body.data.defaultModel === undefined ? existing?.defaultModel : body.data.defaultModel;
+            if (!!engine !== !!model)
+                return res.status(400).json({ message: "Choose both a default harness and model, or clear both" });
+            if (engine && model) {
+                const selected = validateRunSelection({
+                    engine, model,
+                    executionMode: body.data.defaultExecutionMode ?? existing?.defaultExecutionMode ?? "IMPLEMENT",
+                }, true);
+                if (!selected.ok) return res.status(400).json({ message: selected.issue.reason });
+            }
+            // Persist the validated pair together, including on partial policy updates.
+            const values = { ...body.data, defaultEngine: engine ?? null, defaultModel: model ?? null };
             const agentConfig = await prisma.organizationAgentConfig.upsert({
                 where: { organizationId },
-                create: { organizationId, ...body.data },
-                update: body.data,
+                create: { organizationId, ...values },
+                update: values,
             });
             return res
                 .status(200)

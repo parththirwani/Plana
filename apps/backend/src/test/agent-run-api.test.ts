@@ -121,7 +121,7 @@ const seedData = () =>
             { id: "iss_9", title: "Foreign", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_2", assigneeIds: [], repository: null,
             } as MockIssue,
         ],
-        orgAgentConfigs: [orgAgentConfig],
+        orgAgentConfigs: [structuredClone(orgAgentConfig)],
     });
 
 let keySeq = 0;
@@ -632,4 +632,100 @@ describe("agent policy configuration", () => {
         expect(response.status).toBe(201);
         expect((await json(response)).run.repository).toBe("acme/new");
     });
+});
+
+
+describe("team agent settings read and defaults", () => {
+  const path = "/api/v1/organizations/org_1/agent-config";
+  test("all team roles can read policy, outsiders and signed-out users cannot", async () => {
+    for (const email of [
+      "alice@example.com",
+      "bob@example.com",
+      "carol@example.com",
+    ]) {
+      const response = await http.get(path, tok(email));
+      expect(response.status).toBe(200);
+      const body = await json(response);
+      expect(body.config.allowedRepositories).toEqual(["acme/web", "acme/api"]);
+      expect(body.engines.map((e: { id: string }) => e.id)).toEqual([
+        "CODEX",
+        "CLAUDE_CODE",
+        "OPENCODE",
+        "PI",
+      ]);
+      expect(body.simulation).toBe(true);
+    }
+    for (const email of ["dave@example.com", "erin@example.com"])
+      expect((await http.get(path, tok(email))).status).toBe(403);
+    expect((await http.get(path, null)).status).toBe(401);
+  });
+  test("members cannot change policy even if they construct the request directly", async () => {
+    expect(
+      (
+        await http.put(
+          path,
+          { allowedRepositories: ["evil/repo"] },
+          tok("carol@example.com"),
+        )
+      ).status,
+    ).toBe(403);
+  });
+  test("rejects mismatched, unavailable, and partially changed default models without saving", async () => {
+    for (const change of [
+      { defaultEngine: "PI", defaultModel: "gpt-5" },
+      { defaultEngine: "CODEX", defaultModel: "gpt-4.1" },
+      { defaultEngine: "PI" },
+      { defaultEngine: null },
+    ]) {
+      expect(
+        (
+          await http.put(
+            path,
+            { allowedRepositories: ["acme/web"], ...change },
+            tok("alice@example.com"),
+          )
+        ).status,
+      ).toBe(400);
+    }
+    expect(
+      (await json(await http.get(path, tok("alice@example.com")))).config
+        .defaultModel,
+    ).toBe("gpt-5");
+  });
+  test("admin defaults persist for the team and populate issue capabilities", async () => {
+    const config = {
+      allowedRepositories: ["acme/web"],
+      defaultEngine: "CLAUDE_CODE",
+      defaultModel: "claude-sonnet-4",
+      defaultExecutionMode: "PLAN_AND_APPROVE",
+    };
+    expect(
+      (await http.put(path, config, tok("alice@example.com"))).status,
+    ).toBe(200);
+    const capabilities = await json(
+      await http.get(
+        "/api/v1/issues/iss_1/agent-runs/capabilities",
+        tok("carol@example.com"),
+      ),
+    );
+    expect(capabilities.defaults.engine).toBe("CLAUDE_CODE");
+    expect(capabilities.defaults.model).toBe("claude-sonnet-4");
+    expect(capabilities.defaults.executionMode).toBe("PLAN_AND_APPROVE");
+    expect(capabilities.allowedRepositories).toEqual(["acme/web"]);
+  });
+  test("clearing both defaults lets teammates explicitly choose their own harness", async () => {
+    expect(
+      (
+        await http.put(
+          path,
+          { allowedRepositories: [], defaultEngine: null, defaultModel: null },
+          tok("alice@example.com"),
+        )
+      ).status,
+    ).toBe(200);
+    const body = await json(await http.get(path, tok("carol@example.com")));
+    expect(body.config.defaultEngine).toBeNull();
+    expect(body.config.defaultModel).toBeNull();
+    expect(body.config.allowedRepositories).toEqual([]);
+  });
 });

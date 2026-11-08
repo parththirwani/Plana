@@ -4,7 +4,7 @@ Verified on 2026-11-08 at implementation/test commit `1735366d96f0468b1c656c8d1e
 
 Environment: Bun 1.4.2, Prisma 7.9.1 with the generated client, PostgreSQL 17.11 in a disposable Docker container. All eight migrations applied to a new `plana_release_test` database. No cloud/provider credentials were used.
 
-## Commands and observed results
+## Initial foundation commands and observed results
 
 Commands run from the named package directory:
 
@@ -56,6 +56,22 @@ The largest authored file remains below 1,000 lines. New code is split across co
 
 ## Explicitly incomplete release work
 
-This verifies the local foundation and its fake adapter contracts. It does not verify real E2B lifecycle, real Codex/Claude Code/OpenCode/Pi behavior, native-provider recovery, GitHub App onboarding or publication, gateway credentials/metering, budget reservations/quotas, production artifact storage/retention, skills, or the agent card UI. Those are architecture implementation steps 2–6 and remain incomplete.
+This verifies the local foundation and its fake adapter contracts. It does not verify real E2B lifecycle, real Codex/Claude Code/OpenCode/Pi behavior, native-provider recovery, GitHub App onboarding or publication, gateway credentials/metering, budget reservations/quotas, production artifact storage/retention, skills, or agent message composition. Those are architecture implementation steps 2–6 and remain incomplete.
 
 Fake checks execute against the fake sandbox; a fake acknowledgement creates no real branch or PR. Real adapters must be qualified together with real validation/review, credential-separated publication, revocation, network restrictions, recovery and cleanup before production execution is enabled. The architecture's full release checklist remains unchecked.
+
+
+## Team harness UI follow-up
+
+The product now includes **Organization settings → Agents** and **Card → Agents**. This replaces the temporary demonstration UI. Each organization stores its approved repositories and default harness/model/run mode. Admins edit policy; admins and moderators operate runs; members view plans and activity. The API enforces these roles even when requests bypass the UI. The selection UI uses locally served Codex, Claude, OpenCode, and Pi logos, with sources/license documented in `apps/frontend/public/harnesses/README.md`.
+
+Rechecked on 2026-11-08 after adding this UI:
+
+- Backend generated-client typecheck passes; unit/API suite **284 pass, 0 fail**.
+- Five added API regressions cover team policy visibility, outsider/member restrictions, invalid default pairs, saved defaults in capabilities, and clearing defaults.
+- Frontend typecheck passes; **10 component/selection tests pass**. These use server-rendered components and capability fixtures. They cover role-specific controls, supported selections, plan visibility, persisted sandbox phases, and final-run restrictions. They are not an interactive browser end-to-end proof.
+- Frontend production build passes. ESLint on every changed/new frontend TypeScript file passes. Full lint retains the original two Prettier errors and nine warnings.
+- All eight migrations apply to a fresh `plana_ui_test` PostgreSQL database. The two integration suites still pass **5 + 14 tests**, including real process boundaries. WebSocket suite remains **19 pass, 0 fail**.
+- CI now also runs frontend typechecking, the component/selection tests, and a production build.
+
+Engine execution is still simulated. Real E2B provisioning, real provider model calls, real GitHub publication, metering/budget enforcement, and the message composition UI remain incomplete. A launch button does not claim those integrations exist.

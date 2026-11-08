@@ -36,3 +36,5 @@ jobs:
         working-directory: apps/backend
       - run: bun test
         working-directory: apps/websocket
+      - run: bun run check-types && bun run test:agents && bun run build
+        working-directory: apps/frontend
