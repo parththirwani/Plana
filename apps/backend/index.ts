@@ -10,6 +10,8 @@ import issueRouter from "./src/routers/issue";
 import commentRouter from "./src/routers/comment";
 import onboardingRouter from "./src/routers/onboarding";
 import wsTokenRouter from "./src/routers/ws-token";
+import agentConfigRouter from "./src/routers/agentConfig";
+import agentRunRouter from "./src/routers/agentRun";
 
 export const app = express();
 
@@ -31,6 +33,8 @@ app.use("/api/v1", issueRouter);
 app.use("/api/v1", commentRouter);
 app.use("/api/v1/onboarding", onboardingRouter);
 app.use("/api/v1", wsTokenRouter);
+app.use("/api/v1", agentRunRouter);
+app.use("/api/v1", agentConfigRouter);
 
 if (process.env.NODE_ENV !== "test") {
   app.listen(8000, () => {

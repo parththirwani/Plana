@@ -1,0 +1,51 @@
+Date: 2026-11-08
+Implementation/test commit: 1735366d96f0468b1c656c8d1e19684cbf432386
+Runtime: Bun 1.4.2; Prisma client 7.9.1; PostgreSQL 17.11
+Database: fresh disposable plana_release_test on loopback; no provider credentials
+
+prisma generate: success
+prisma migrate deploy: all eight migrations applied
+backend check-types: exit 0, zero errors
+
+backend unit suite:
+  279 pass
+  0 fail
+  1016 expect() calls
+  Ran 279 tests across 19 files.
+
+PostgreSQL state-machine suite:
+  5 pass
+  0 fail
+  40 expect() calls
+
+PostgreSQL HTTP/queue/process foundation suite:
+  14 pass
+  0 fail
+  63 expect() calls
+
+WebSocket suite:
+  19 pass
+  0 fail
+  23 expect() calls
+
+frontend build: success
+frontend lint: existing __root.tsx errors at lines 86 and 93; 2 errors, 9 warnings
+frontend files changed: 0
+actionlint: exit 0
+git diff --check: exit 0
+
+Load-bearing process proofs:
+  Concurrent launch processes: one admitted run, one event, one queued job.
+  Stale process after cancellation: ILLEGAL_TRANSITION; final CANCELLED.
+  New processes restore plan, message receipt, approval and implementation.
+  SIGKILL at provisioning: replacement completes; attempts=2; one provisioning transition.
+  Slow stream: accepted run renewals and valid queue completion.
+  Reclaimed owner: no publication intent or publisher effect.
+  Quiet engine: persisted message unblocks stream; exactly one durable receipt.
+  Worker entrypoint: ready after database check; SIGTERM exits cleanly.
+  Exhaustion: BLOCKED, handled failure receipt, resume completes the same run.
+  Concurrent approval processes: one decision and one execution job.
+  Idle paused cancellation: replacement cleanup; final CANCELLED, cleaned=true.
+
+Fault-injection HTTP 500 responses were expected and asserted; rollback/retry checks passed.
+These results do not constitute real-cloud release verification.

@@ -1,3 +1,4 @@
+import { IssueAgents } from "./agents/issue-agents";
 import { MoreHorizontal, Send, Sparkles, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
@@ -21,12 +22,15 @@ import { useAuthStore } from "@/lib/auth-store";
 export function IssuePanel({
   issue,
   role,
+  orgId,
   onClose,
 }: {
   issue: Issue;
   role: Role | null;
+  orgId: string;
   onClose: () => void;
 }) {
+  const [tab, setTab] = useState<"details" | "agents">("details");
   const members = usePlana((s) => s.members);
   const comments = usePlana((s) => s.comments);
   const loadComments = usePlana((s) => s.loadComments);
@@ -152,7 +156,62 @@ export function IssuePanel({
           </GhostButton>
         </header>
 
-        <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
+        <div
+          className="flex gap-1 border-b border-border px-5"
+          role="tablist"
+          aria-label="Card sections"
+        >
+          {(["details", "agents"] as const).map((t) => (
+            <button
+              key={t}
+              role="tab"
+              id={`card-tab-${t}`}
+              aria-controls={`card-panel-${t}`}
+              aria-selected={tab === t}
+              tabIndex={tab === t ? 0 : -1}
+              onKeyDown={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                event.preventDefault();
+                const next =
+                  event.key === "Home"
+                    ? "details"
+                    : event.key === "End"
+                      ? "agents"
+                      : t === "details"
+                        ? "agents"
+                        : "details";
+                setTab(next);
+                document.getElementById(`card-tab-${next}`)?.focus();
+              }}
+              onClick={() => setTab(t)}
+              className={cn(
+                "border-b-2 px-3 py-2.5 text-sm font-medium focus-visible:ring-2 focus-visible:ring-ring",
+                tab === t
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {t === "details" ? "Details" : "Agents"}
+            </button>
+          ))}
+        </div>
+        {tab === "agents" && role && (
+          <div
+            id="card-panel-agents"
+            role="tabpanel"
+            aria-labelledby="card-tab-agents"
+            className="flex-1 overflow-y-auto px-5 py-5"
+          >
+            <IssueAgents key={issue.id} issueId={issue.id} orgId={orgId} role={role} />
+          </div>
+        )}
+        <div
+          hidden={tab !== "details"}
+          id="card-panel-details"
+          role="tabpanel"
+          aria-labelledby="card-tab-details"
+          className="flex-1 space-y-6 overflow-y-auto px-5 py-5"
+        >
           {error && (
             <p
               className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive"
@@ -368,7 +427,12 @@ export function IssuePanel({
           </section>
         </div>
 
-        <footer className="flex items-end gap-2 border-t border-border px-5 py-3">
+        <footer
+          className={cn(
+            "items-end gap-2 border-t border-border px-5 py-3",
+            tab === "details" ? "flex" : "hidden",
+          )}
+        >
           <textarea
             rows={1}
             value={draft}

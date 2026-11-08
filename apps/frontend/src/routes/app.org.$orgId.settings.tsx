@@ -1,3 +1,4 @@
+import { TeamAgentSettings } from "@/components/plana/agents/team-agent-settings";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Mail, Settings2, Trash2, Users } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -22,12 +23,13 @@ import type { Role } from "@/lib/plana-types";
 import { Authed } from "@/lib/auth-guard";
 import { ApiError } from "@/lib/api";
 
-const TABS = ["General", "Members", "Danger zone"] as const;
+const TABS = ["General", "Members", "Agents", "Danger zone"] as const;
 type Tab = (typeof TABS)[number];
 
 const settingsSearch = (search: unknown): { tab: Tab } => {
   const s = search as { tab?: unknown };
-  const tab: Tab = s?.tab === "Members" || s?.tab === "Danger zone" ? s.tab : "General";
+  const tab: Tab =
+    s?.tab === "Members" || s?.tab === "Agents" || s?.tab === "Danger zone" ? s.tab : "General";
   return { tab };
 };
 
@@ -192,12 +194,12 @@ function OrgSettings() {
   return (
     <AppShell orgId={orgId} title="Settings" breadcrumb={[org.name, "Settings"]}>
       <div className="max-w-3xl">
-        <div className="mb-6 flex gap-1 border-b border-border">
+        <div className="mb-6 flex gap-1 overflow-x-auto border-b border-border">
           {TABS.map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors duration-200 ${
+              className={`-mb-px shrink-0 border-b-2 px-3 py-2 text-sm transition-colors duration-200 ${
                 tab === t
                   ? "border-primary text-primary"
                   : "border-transparent text-muted-foreground hover:text-foreground"
@@ -349,6 +351,8 @@ function OrgSettings() {
             </Surface>
           </div>
         )}
+
+        {tab === "Agents" && <TeamAgentSettings key={orgId} orgId={orgId} role={role} />}
 
         {tab === "Danger zone" && (
           <div className="fade-up rounded-2xl border border-destructive/25 bg-destructive-soft/40 p-6">

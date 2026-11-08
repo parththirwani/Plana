@@ -21,6 +21,8 @@ model User {
   memberships Membership[]
   comments    Comment[]
   assignedIssues Issue[]    @relation("IssueAssignees")
+  createdRuns AgentRun[]   @relation("RunCreatedBy")
+  runApprovals RunApproval[] @relation("ApprovalDecidedBy")
 
 }
 
@@ -36,6 +38,8 @@ model Organization {
   memberships Membership[]
   boards      Board[]
   invitations Invitation[]
+  agentConfig  OrganizationAgentConfig?
+  agentRuns    AgentRun[]
 }
 
 model Invitation {
@@ -75,6 +79,7 @@ model Board {
 
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sections        Section[]
+  defaultRepository String?
 
   @@index([organizationId])
 }
@@ -107,6 +112,8 @@ model Issue {
   section     Section       @relation(fields: [sectionId], references: [id], onDelete: Cascade)
   comments    Comment[]
   assignees   User[]        @relation("IssueAssignees")
+  agentRuns   AgentRun[]
+  repository  String?
 
   @@index([sectionId])
 }
@@ -139,3 +146,180 @@ enum IssuePriority {
   HIGH
   URGENT
 }
+
+enum AgentEngine {
+  CODEX
+  CLAUDE_CODE
+  OPENCODE
+  PI
+}
+
+enum RunExecutionMode {
+  IMPLEMENT
+  PLAN_AND_APPROVE
+}
+
+enum RunStatus {
+  QUEUED
+  PROVISIONING
+  PLANNING
+  AWAITING_APPROVAL
+  IMPLEMENTING
+  VALIDATING
+  REVIEWING
+  PUBLISHING
+  COMPLETED
+  BLOCKED
+  LIMIT_REACHED
+  FAILED
+  CANCELLED
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model OrganizationAgentConfig {
+  id                   String           @id @default(uuid())
+  organizationId       String           @unique
+  allowedRepositories  String[]
+  defaultEngine        AgentEngine?
+  defaultModel         String?
+  defaultExecutionMode RunExecutionMode @default(IMPLEMENT)
+  runBudgetUsd         Float            @default(5)
+  dailyOrgBudgetUsd    Float            @default(25)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  organization         Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model AgentRun {
+  id             String           @id @default(uuid())
+  issueId        String
+  organizationId String
+  createdBy      String
+  engine         AgentEngine
+  model          String
+  options        Json             @default("{}")
+  executionMode  RunExecutionMode @default(IMPLEMENT)
+  repository     String
+  baseCommit     String?
+  branchName     String
+  status         RunStatus        @default(QUEUED)
+  activeIssueId  String?          @unique
+  taskSnapshot   Json             @default("{}")
+  runtime        Json             @default("{}")
+  planContextHash String?
+  planVersion    Int              @default(0)
+  owner          String?
+  leaseExpiresAt DateTime?
+  fencingToken   Int              @default(0)
+  /// Instant of the first execution attempt (set when a claim finalizes the
+  /// run start). `status != QUEUED && attemptedAt == null` therefore means
+  /// "transitioned by a claim that died before it durably recorded its start"
+  /// — a retry must RESUME the persisted step instead of replaying provisioning.
+  attemptedAt    DateTime?        @map("attempted_at")
+  idempotencyKey String
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  issue           Issue          @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdByUser   User           @relation("RunCreatedBy", fields: [createdBy], references: [id], onDelete: Cascade)
+  events          RunEvent[]
+  approvals       RunApproval[]
+  jobs            AgentJob[]
+  leaseRenewals   RunLeaseRenewal[]
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([issueId])
+  @@index([organizationId, status])
+  @@index([status, leaseExpiresAt])
+}
+
+
+/// Audit trail of run-lease renewals. Every accepted `renewRunLease` writes one
+/// row inside the same transaction that bumps `fencing_token`, so a renewal —
+/// or the fact that a zombie worker's stale token was rejected — can be
+/// reconstructed later from the database alone.
+model RunLeaseRenewal {
+  id             String   @id @default(uuid())
+  runId          String   @map("run_id")
+  machineId      String   @map("machine_id")
+  fencingToken   Int      @map("fencing_token")
+  leaseExpiresAt DateTime @map("lease_expires_at")
+  reason         String
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  run            AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, createdAt])
+  @@map("run_lease_renewals")
+}
+
+model AgentJob {
+  id             String    @id @default(uuid())
+  type           String
+  runId          String?
+  payload        Json      @default("{}")
+  status         JobStatus @default(QUEUED)
+  idempotencyKey String?   @unique
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(5)
+  availableAt    DateTime  @default(now())
+  lockedBy       String?
+  lockedAt       DateTime?
+  leaseExpiresAt DateTime?
+  fencingToken   Int       @default(0)
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  run AgentRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt])
+  @@index([runId])
+}
+
+model RunEvent {
+  id        String   @id @default(uuid())
+  runId     String
+  sequence  Int
+  type      String
+  data      Json
+  createdAt DateTime @default(now())
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, sequence])
+  @@index([runId])
+}
+
+model RunApproval {
+  id          String           @id @default(uuid())
+  runId       String
+  planVersion Int
+  decision    ApprovalDecision
+  baseCommit  String
+  contextHash String           @default("")
+  decidedBy   String
+  decidedAt   DateTime         @default(now())
+
+  run           AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  decidedByUser User     @relation("ApprovalDecidedBy", fields: [decidedBy], references: [id], onDelete: Cascade)
+
+  @@unique([runId, planVersion])
+  @@index([runId])
+}
+
+
