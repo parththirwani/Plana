@@ -1,3 +1,4 @@
+import { recordApproval } from "../../runs/approvals";
 import { prisma } from "@repo/db/db";
 import { createRun, transitionRun } from "../../runs/runRepository";
 import { setRunEventPublisher } from "../../runs/realtime";
@@ -53,6 +54,15 @@ try {
         console.log(
             "RESULT " +
                 JSON.stringify({ id: result.run.id, created: result.created }),
+        );
+    } else if (mode === "approve") {
+        const decision = await recordApproval(JSON.parse(arg!));
+        console.log(
+            "RESULT " +
+                JSON.stringify({
+                    replayed: decision.replayed,
+                    status: decision.run.status,
+                }),
         );
     } else {
         const registry = createFakeOnlyRegistry();

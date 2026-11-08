@@ -569,4 +569,41 @@ suite("Phase 1 actual HTTP, queue and process boundaries", () => {
         ).toBe(200);
         expect((await worker.runOnce())?.status).toBe("completed");
     });
+    test("two separate approval processes record exactly one decision and execution job", async () => {
+        const s = await launch("PLAN_AND_APPROVE");
+        expect((await result(child("worker"))).status).toBe(
+            "awaiting-approval",
+        );
+        const input = JSON.stringify({
+            runId: s.run.id,
+            planVersion: 1,
+            decision: "APPROVED",
+            decidedBy: s.user.id,
+        });
+        const decisions = await Promise.all([
+            result(child("approve", input)),
+            result(child("approve", input)),
+        ]);
+        expect(decisions.filter((d) => !d.replayed)).toHaveLength(1);
+        expect(
+            await prisma.runApproval.count({ where: { runId: s.run.id } }),
+        ).toBe(1);
+        expect(
+            (await store.listByRun(s.run.id)).filter(
+                (j) => j.idempotencyKey === `run:${s.run.id}:execute:v1`,
+            ),
+        ).toHaveLength(1);
+    });
+    test("a replacement process cleans an idle cancelled approval sandbox", async () => {
+        const s = await launch("PLAN_AND_APPROVE");
+        expect((await result(child("worker"))).status).toBe(
+            "awaiting-approval",
+        );
+        await requestRunCancellation(s.run.id, s.user.id);
+        expect((await result(child("worker"))).status).toBe("cleaned");
+        const final = (await getRunById(s.run.id))!;
+        expect(final.status).toBe("CANCELLED");
+        expect(final.activeIssueId).toBeNull();
+        expect(readRuntime(final).cleaned).toBe(true);
+    });
 });
