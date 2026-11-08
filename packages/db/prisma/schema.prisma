@@ -180,6 +180,14 @@ enum ApprovalDecision {
   REJECTED
 }
 
+enum JobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
 model OrganizationAgentConfig {
   id                   String           @id @default(uuid())
   organizationId       String           @unique
@@ -222,10 +230,35 @@ model AgentRun {
   createdByUser   User           @relation("RunCreatedBy", fields: [createdBy], references: [id], onDelete: Cascade)
   events          RunEvent[]
   approvals       RunApproval[]
+  jobs            AgentJob[]
 
   @@unique([organizationId, idempotencyKey])
   @@index([issueId])
   @@index([organizationId, status])
+}
+
+model AgentJob {
+  id             String    @id @default(uuid())
+  type           String
+  runId          String?
+  payload        Json      @default("{}")
+  status         JobStatus @default(QUEUED)
+  idempotencyKey String?   @unique
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(5)
+  availableAt    DateTime  @default(now())
+  lockedBy       String?
+  lockedAt       DateTime?
+  leaseExpiresAt DateTime?
+  fencingToken   Int       @default(0)
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  run AgentRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([status, availableAt])
+  @@index([runId])
 }
 
 model RunEvent {

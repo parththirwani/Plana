@@ -42,6 +42,25 @@ export type MockRunApproval = {
     decidedAt: string;
 };
 
+export type MockAgentJob = {
+    id: string;
+    type: string;
+    runId: string | null;
+    payload: Record<string, unknown>;
+    status: string;
+    idempotencyKey: string | null;
+    attempts: number;
+    maxAttempts: number;
+    availableAt: string;
+    lockedBy: string | null;
+    lockedAt: string | null;
+    leaseExpiresAt: string | null;
+    fencingToken: number;
+    lastError: string | null;
+    createdAt: string;
+    updatedAt: string;
+};
+
 export type MockOrgAgentConfig = {
     id: string;
     organizationId: string;
@@ -120,6 +139,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
     let runEvents: MockRunEvent[] = [];
     let runApprovals: MockRunApproval[] = [];
     let orgAgentConfigs: MockOrgAgentConfig[] = [];
+    let agentJobs: MockAgentJob[] = [];
 
     const matchAgentRun = (run: MockAgentRun, where: any) =>
         (where?.id === undefined || run.id === where.id) &&
@@ -480,22 +500,125 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
         },
     };
 
+    const matchAgentJob = (job: MockAgentJob, where: any) =>
+        (where?.id === undefined || job.id === where.id) &&
+        matchesWhere(job.type, where?.type) &&
+        (where?.runId === undefined || job.runId === where.runId) &&
+        matchesWhere(job.status, where?.status) &&
+        matchesWhere(job.idempotencyKey, where?.idempotencyKey) &&
+        (where?.lockedBy === undefined || job.lockedBy === where.lockedBy) &&
+        matchesWhere(job.availableAt, where?.availableAt) &&
+        matchesWhere(job.leaseExpiresAt, where?.leaseExpiresAt);
+
+    const assertAgentJobUnique = (candidate: any, excludeId?: string) => {
+        if (
+            candidate.idempotencyKey !== undefined &&
+            candidate.idempotencyKey !== null &&
+            agentJobs.some(
+                (j) =>
+                    j.id !== excludeId &&
+                    j.idempotencyKey === candidate.idempotencyKey
+            )
+        ) {
+            throw uniqueViolation("idempotencyKey");
+        }
+    };
+
+    const agentJob = {
+        findUnique: async ({ where }: { where: any }) => {
+            if (where?.id !== undefined) {
+                return agentJobs.find((j) => j.id === where.id) ?? null;
+            }
+            if (where?.idempotencyKey !== undefined) {
+                return (
+                    agentJobs.find(
+                        (j) => j.idempotencyKey === where.idempotencyKey
+                    ) ?? null
+                );
+            }
+            return null;
+        },
+        findFirst: async ({ where }: { where: any }) =>
+            agentJobs.find((j) => matchAgentJob(j, where)) ?? null,
+        findMany: async ({
+            where,
+            orderBy,
+            skip,
+            take,
+        }: {
+            where: any;
+            orderBy?: any;
+            skip?: number;
+            take?: number;
+        }) =>
+            applyPage(
+                applyOrderBy(
+                    agentJobs.filter((j) => matchAgentJob(j, where)),
+                    orderBy
+                ),
+                skip,
+                take
+            ),
+        count: async ({ where }: { where: any }) =>
+            agentJobs.filter((j) => matchAgentJob(j, where)).length,
+        create: async ({ data }: { data: any }) => {
+            assertAgentJobUnique(data, undefined);
+            const now = new Date().toISOString();
+            const job: MockAgentJob = {
+                id: data.id ?? nextId("job"),
+                type: data.type,
+                runId: data.runId ?? null,
+                payload: data.payload ?? {},
+                status: data.status ?? "QUEUED",
+                idempotencyKey: data.idempotencyKey ?? null,
+                attempts: data.attempts ?? 0,
+                maxAttempts: data.maxAttempts ?? 5,
+                availableAt: data.availableAt ?? now,
+                lockedBy: data.lockedBy ?? null,
+                lockedAt: data.lockedAt ?? null,
+                leaseExpiresAt: data.leaseExpiresAt ?? null,
+                fencingToken: data.fencingToken ?? 0,
+                lastError: data.lastError ?? null,
+                createdAt: now,
+                updatedAt: now,
+            };
+            agentJobs.push(job);
+            return job;
+        },
+        update: async ({ where, data }: { where: any; data: any }) => {
+            const job = agentJobs.find((j) => j.id === where.id)!;
+            assertAgentJobUnique({ ...job, ...data }, job.id);
+            Object.assign(job, data, {
+                updatedAt: new Date().toISOString(),
+            });
+            return job;
+        },
+        deleteMany: async ({ where }: { where: any }) => {
+            const removed = agentJobs.filter((j) => matchAgentJob(j, where));
+            agentJobs = agentJobs.filter((j) => !matchAgentJob(j, where));
+            return { count: removed.length };
+        },
+    };
+
     return {
         agentRun,
         runEvent,
         runApproval,
         organizationAgentConfig,
+        agentJob,
         allRows: () => [
             ...agentRuns,
             ...runEvents,
             ...runApprovals,
             ...orgAgentConfigs,
+            ...agentJobs,
         ],
         resetAgentState: (seed: MockSeed) => {
             agentRuns = seed.agentRuns ?? [];
             runEvents = seed.runEvents ?? [];
             runApprovals = seed.runApprovals ?? [];
             orgAgentConfigs = seed.orgAgentConfigs ?? [];
+            agentJobs = seed.agentJobs ?? [];
         },
         deleteRunsForIssue: (issueId: string) => {
             const runIds = agentRuns
@@ -506,6 +629,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
             runApprovals = runApprovals.filter((a) =>
                 !runIds.includes(a.runId)
             );
+            agentJobs = agentJobs.filter((j) => !runIds.includes(j.runId!));
         },
         deleteRunsForOrganization: (organizationId: string) => {
             const runIds = agentRuns
@@ -518,6 +642,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
             runApprovals = runApprovals.filter((a) =>
                 !runIds.includes(a.runId)
             );
+            agentJobs = agentJobs.filter((j) => !runIds.includes(j.runId!));
             orgAgentConfigs = orgAgentConfigs.filter(
                 (c) => c.organizationId !== organizationId
             );

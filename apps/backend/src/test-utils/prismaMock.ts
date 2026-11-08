@@ -4,6 +4,7 @@ import type {
     MockRunApproval,
     MockOrgAgentConfig,
     MockRunEvent,
+    MockAgentJob,
 } from "./prismaMockAgent";
 
 export type {
@@ -11,6 +12,7 @@ export type {
     MockRunApproval,
     MockOrgAgentConfig,
     MockRunEvent,
+    MockAgentJob,
 };
 
 export type MockUser = {
@@ -93,6 +95,7 @@ export type MockSeed = {
     runEvents?: MockRunEvent[];
     runApprovals?: MockRunApproval[];
     orgAgentConfigs?: MockOrgAgentConfig[];
+    agentJobs?: MockAgentJob[];
 };
 
 const createPrismaMock = () => {
@@ -546,6 +549,7 @@ const createPrismaMock = () => {
         runEvent: agents.runEvent,
         runApproval: agents.runApproval,
         organizationAgentConfig: agents.organizationAgentConfig,
+        agentJob: agents.agentJob,
         $transaction: async (arg: any) =>
             Array.isArray(arg)
                 ? await Promise.all(arg.map((op: any) => op))
