@@ -1,3 +1,4 @@
+import { createSerialLock } from "../lib/serialLock";
 import {
     DEFAULT_LEASE_MS,
     DEFAULT_MAX_ATTEMPTS,
@@ -18,27 +19,16 @@ const clone = (job: JobRecord): JobRecord => ({
     payload: { ...job.payload },
 });
 
-// Sections (claim/renew/complete/fail/cancel) run as one critical section,
-// mirroring how the Postgres store's single statements + FOR UPDATE SKIP
-// LOCKED serialize concurrent workers. Callers may interleave `await`s freely;
-// exactly one section mutates state at a time, in FIFO call order — so two
-// concurrent claimNext calls can never win the same job.
-const createLock = () => {
-    let tail: Promise<unknown> = Promise.resolve();
-    return <T>(section: () => T | Promise<T>): Promise<T> => {
-        const result = tail.then(section, section);
-        tail = result.then(
-            () => undefined,
-            () => undefined
-        );
-        return result;
-    };
-};
+// Sections (claim/renew/complete/fail/cancel) run as one critical section via
+// the shared FIFO lock, mirroring how the Postgres store's single statements +
+// FOR UPDATE SKIP LOCKED serialize concurrent workers. Callers may interleave
+// `await`s freely; exactly one section mutates state at a time, in FIFO call
+// order — so two concurrent claimNext calls can never win the same job.
 
 export const createMemoryJobStore = (): JobStore => {
     const jobs: JobRecord[] = [];
     let idSeq = 0;
-    const lock = createLock();
+    const lock = createSerialLock();
 
     const byId = (id: string) => jobs.find((j) => j.id === id) ?? null;
 
