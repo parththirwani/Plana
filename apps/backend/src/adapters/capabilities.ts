@@ -22,11 +22,12 @@ export const AGENT_ENGINE_IDS = [
 ] as const;
 export type AgentEngineId = (typeof AGENT_ENGINE_IDS)[number];
 
-export const RUN_EXECUTION_MODE_IDS = ["IMPLEMENT", "PLAN_AND_APPROVE"] as const;
+export const RUN_EXECUTION_MODE_IDS = ["IMPLEMENT", "PLAN_AND_APPROVE",
+] as const;
 export type RunExecutionModeId = (typeof RUN_EXECUTION_MODE_IDS)[number];
 
 export type Availability =
-    | { available: true }
+    { available: true }
     | { available: false; reason: string };
 
 export type OptionValueSpec = {
@@ -54,7 +55,7 @@ export type EngineSpec = {
 
 const both = (
     implement: Availability,
-    planAndApprove: Availability
+    planAndApprove: Availability,
 ): EngineSpec["executionModes"] => ({
     IMPLEMENT: implement,
     PLAN_AND_APPROVE: planAndApprove,
@@ -67,8 +68,7 @@ const REASONING_EFFORT: OptionValueSpec[] = [
     {
         value: "max",
         available: false,
-        reason:
-            "Codex caps agent-side reasoning effort at 'high' until the model gateway enforces a per-run budget tier",
+        reason: "reasoning effort 'max' is excluded from the fake fixture",
     },
 ];
 
@@ -92,8 +92,7 @@ export const ENGINE_CAPABILITIES: Record<AgentEngineId, EngineSpec> = {
             {
                 id: "gpt-4.1",
                 available: false,
-                reason:
-                    "gpt-4.1 is retired for cloud agent runs; choose gpt-5 or gpt-5-mini",
+                reason: "gpt-4.1 is excluded from the fake capability fixture",
                 options: {},
             },
         ],
@@ -114,8 +113,7 @@ export const ENGINE_CAPABILITIES: Record<AgentEngineId, EngineSpec> = {
                         {
                             value: "ultrathink",
                             available: false,
-                            reason:
-                                "ultrathink requires a model-gateway budget tier that is not enabled yet",
+                            reason: "ultrathink has no fake budget tier fixture",
                         },
                     ],
                 },
@@ -123,8 +121,7 @@ export const ENGINE_CAPABILITIES: Record<AgentEngineId, EngineSpec> = {
             {
                 id: "claude-haiku-3-5",
                 available: false,
-                reason:
-                    "claude-haiku-3-5 is not wired to the model gateway in Phase 1; choose claude-sonnet-4",
+                reason: "claude-haiku-3-5 is excluded from the fake capability fixture",
                 options: {},
             },
         ],
@@ -136,37 +133,34 @@ export const ENGINE_CAPABILITIES: Record<AgentEngineId, EngineSpec> = {
         executionModes: both(
             { available: true },
             {
-                available: false,
-                reason:
-                    "the OpenCode adapter does not support pause-on-plan (PLAN_AND_APPROVE) in Phase 1",
-            }
+                available: true }
         ),
         models: [
             { id: "opencode-linear", available: true, options: {} },
             {
                 id: "opencode-large",
                 available: false,
-                reason:
-                    "opencode-large is quota-pending with the provider; choose opencode-linear",
+                reason: "opencode-large is excluded from the fake capability fixture",
                 options: {},
             },
         ],
     },
     PI: {
         id: "PI",
-        label: "Pi",
-        available: false,
-        reason:
-            "the Pi engine adapter has not shipped; PI requests are rejected and NEVER substituted with another engine",
+        label: "Pi (fake)",
+        available: true,
         executionModes: both(
-            { available: false, reason: "PI is unavailable" },
-            { available: false, reason: "PI is unavailable" }
+            { available: true },
+            { available: true }
         ),
         models: [
             {
                 id: "pi-1",
+                available: true, options: {} },
+            {
+                id: "pi-unavailable",
                 available: false,
-                reason: "PI is unavailable in Phase 1",
+                reason: "pi-unavailable is excluded from the fake capability fixture",
                 options: {},
             },
         ],
@@ -174,14 +168,30 @@ export const ENGINE_CAPABILITIES: Record<AgentEngineId, EngineSpec> = {
 };
 
 export const listEngineSpecs = (): EngineSpec[] =>
-    AGENT_ENGINE_IDS.map((id) => ENGINE_CAPABILITIES[id]);
+    AGENT_ENGINE_IDS.map((id) =>
+        process.env.AGENT_EXECUTION_MODE === "fake"
+            ? ENGINE_CAPABILITIES[id]
+            : {
+                  ...ENGINE_CAPABILITIES[id],
+                  available: false,
+                  reason: "Real engine not qualified; explicitly enable fake mode for simulation",
+                  models: ENGINE_CAPABILITIES[id].models.map((m) => ({
+                      ...m,
+                      available: false,
+                  })),
+                  executionModes: both(
+                      { available: false, reason: "Execution disabled" },
+                      { available: false, reason: "Execution disabled" },
+                  ),
+              },
+    );
 
 export const isAgentEngineId = (value: unknown): value is AgentEngineId =>
     typeof value === "string" &&
     (AGENT_ENGINE_IDS as readonly string[]).includes(value);
 
 export const isRunExecutionModeId = (
-    value: unknown
+    value: unknown,
 ): value is RunExecutionModeId =>
     typeof value === "string" &&
     (RUN_EXECUTION_MODE_IDS as readonly string[]).includes(value);
@@ -219,12 +229,14 @@ export const validateRunSelection = (input: {
     model: string;
     options?: Record<string, unknown>;
     executionMode?: string;
-}): RunSelectionResult => {
+},
+    fixture = false,
+): RunSelectionResult => {
     const issue = (
         field: string,
         reason: string,
         requested: unknown,
-        available?: string[]
+        available?: string[],
     ): { ok: false; issue: RunSelectionIssue } => ({
         ok: false,
         issue: {
@@ -236,17 +248,25 @@ export const validateRunSelection = (input: {
         },
     });
 
+    if (!fixture && process.env.AGENT_EXECUTION_MODE !== "fake")
+        return issue(
+            "engine",
+            "Real engine execution is not configured; fake mode must be explicitly enabled",
+            input.engine,
+        );
+
     if (!isAgentEngineId(input.engine)) {
         return issue(
             "engine",
             `Unknown engine '${String(input.engine)}'; supported engines are ${AGENT_ENGINE_IDS.join(", ")}`,
             input.engine,
-            AGENT_ENGINE_IDS.filter((id) => ENGINE_CAPABILITIES[id].available)
+            AGENT_ENGINE_IDS.filter((id) => ENGINE_CAPABILITIES[id].available),
         );
     }
     const engine = ENGINE_CAPABILITIES[input.engine];
     if (!engine.available) {
-        return issue("engine", engine.reason ?? `${engine.id} is unavailable`, engine.id);
+        return issue("engine", engine.reason ?? `${engine.id} is unavailable`, engine.id,
+        );
     }
 
     const mode = input.executionMode ?? "IMPLEMENT";
@@ -255,7 +275,7 @@ export const validateRunSelection = (input: {
             "executionMode",
             `Unknown execution mode '${String(mode)}'; supported modes are ${RUN_EXECUTION_MODE_IDS.join(", ")}`,
             mode,
-            [...RUN_EXECUTION_MODE_IDS]
+            [...RUN_EXECUTION_MODE_IDS],
         );
     }
     const modeSpec = engine.executionModes[mode];
@@ -263,7 +283,7 @@ export const validateRunSelection = (input: {
         return issue(
             "executionMode",
             modeSpec.reason ?? `${engine.id} does not support ${mode}`,
-            mode
+            mode,
         );
     }
 
@@ -273,7 +293,7 @@ export const validateRunSelection = (input: {
             "model",
             `${engine.label} does not support model '${input.model}'`,
             input.model,
-            describedModelIds(engine)
+            describedModelIds(engine),
         );
     }
     if (!model.available) {
@@ -281,7 +301,7 @@ export const validateRunSelection = (input: {
             "model",
             model.reason ?? `${model.id} is unavailable`,
             model.id,
-            describedModelIds(engine)
+            describedModelIds(engine),
         );
     }
 
@@ -293,9 +313,11 @@ export const validateRunSelection = (input: {
             return issue(
                 `options.${name}`,
                 `${engine.label} model ${model.id} does not support option '${name}'${
-                    known.length ? `; supported options: ${known.join(", ")}` : ""
+                    known.length
+                        ? `; supported options: ${known.join(", ")}`
+                        : ""
                 }`,
-                name
+                name,
             );
         }
         const chosen = spec.find((v) => v.value === String(value));
@@ -307,14 +329,14 @@ export const validateRunSelection = (input: {
                     .map((v) => v.value)
                     .join(", ")}`,
                 String(value),
-                spec.filter((v) => v.available).map((v) => v.value)
+                spec.filter((v) => v.available).map((v) => v.value),
             );
         }
         if (!chosen.available) {
             return issue(
                 `options.${name}`,
                 chosen.reason ?? `${name}='${chosen.value}' is unavailable`,
-                chosen.value
+                chosen.value,
             );
         }
     }

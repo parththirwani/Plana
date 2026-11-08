@@ -1,4 +1,5 @@
-import { SandboxError, type ExecResult, type FakeCheckpoint, type Sandbox, type SandboxState } from "./contract";
+import { SandboxError, type ExecResult, type FakeCheckpoint, type Sandbox, type SandboxState,
+} from "./contract";
 
 // FAKE in-memory sandbox (CP5). This is what the worker drives in tests — it
 // is NOT a claim that E2B was exercised (see the UNVERIFIED ledger). It models
@@ -22,6 +23,7 @@ export type FakeSandboxSpec = {
     baseCommit: string;
     headCommit?: string;
     initialFiles?: Record<string, string>;
+    tracked?: string[];
 };
 
 class FakeSandbox implements Sandbox {
@@ -41,7 +43,7 @@ class FakeSandbox implements Sandbox {
         this.repository = spec.repository;
         this.baseCommit = spec.baseCommit;
         this._files = { ...(spec.initialFiles ?? DEFAULT_REPO_FILES) };
-        this._tracked = new Set(Object.keys(this._files));
+        this._tracked = new Set(spec.tracked ?? Object.keys(this._files));
         this._headCommit = spec.headCommit ?? spec.baseCommit;
     }
 
@@ -57,6 +59,16 @@ class FakeSandbox implements Sandbox {
         return this._checkpoints;
     }
 
+    restoreWorkspace(spec: FakeSandboxSpec) {
+        if (spec.initialFiles) {
+            this._files = { ...spec.initialFiles };
+            this._tracked = new Set(
+                spec.tracked ?? Object.keys(spec.initialFiles),
+            );
+            this._headCommit = spec.headCommit ?? spec.baseCommit;
+        }
+    }
+
     /** Test observability: full current workspace including artifacts. */
     snapshotFiles(): Record<string, string> {
         return { ...this._files };
@@ -64,10 +76,12 @@ class FakeSandbox implements Sandbox {
 
     private requireRunning(op: string): void {
         if (this._state === "KILLED") {
-            throw new SandboxError("KILLED", `sandbox for ${this.runId} is killed; cannot ${op}`);
+            throw new SandboxError("KILLED", `sandbox for ${this.runId} is killed; cannot ${op}`,
+            );
         }
         if (this._state !== "RUNNING") {
-            throw new SandboxError("NOT_RUNNING", `sandbox for ${this.runId} is ${this._state}; cannot ${op}`);
+            throw new SandboxError("NOT_RUNNING", `sandbox for ${this.runId} is ${this._state}; cannot ${op}`,
+            );
         }
     }
 
@@ -75,7 +89,7 @@ class FakeSandbox implements Sandbox {
         if (this._state !== "NEW") {
             throw new SandboxError(
                 "ALREADY_PROVISIONED",
-                `sandbox for ${this.runId} already provisioned (${this._state})`
+                `sandbox for ${this.runId} already provisioned (${this._state})`,
             );
         }
         this.calls.push("provision");
@@ -90,10 +104,12 @@ class FakeSandbox implements Sandbox {
 
     async resume(): Promise<void> {
         if (this._state === "KILLED") {
-            throw new SandboxError("KILLED", `sandbox for ${this.runId} is killed`);
+            throw new SandboxError("KILLED", `sandbox for ${this.runId} is killed`,
+            );
         }
         if (this._state !== "PAUSED") {
-            throw new SandboxError("NOT_PAUSED", `sandbox for ${this.runId} is ${this._state}`);
+            throw new SandboxError("NOT_PAUSED", `sandbox for ${this.runId} is ${this._state}`,
+            );
         }
         this.calls.push("resume");
         this._state = "RUNNING";
@@ -107,7 +123,8 @@ class FakeSandbox implements Sandbox {
 
     async checkpoint(reason: string): Promise<FakeCheckpoint> {
         if (this._state === "KILLED") {
-            throw new SandboxError("KILLED", `sandbox for ${this.runId} is killed; cannot checkpoint`);
+            throw new SandboxError("KILLED", `sandbox for ${this.runId} is killed; cannot checkpoint`,
+            );
         }
         this.calls.push(`checkpoint:${reason}`);
         const checkpoint: FakeCheckpoint = {
@@ -145,7 +162,8 @@ class FakeSandbox implements Sandbox {
 
     async trackedPaths(): Promise<string[]> {
         if (this._state === "KILLED") {
-            throw new SandboxError("KILLED", `sandbox for ${this.runId} is killed`);
+            throw new SandboxError("KILLED", `sandbox for ${this.runId} is killed`,
+            );
         }
         return [...this._tracked].sort();
     }
@@ -153,6 +171,8 @@ class FakeSandbox implements Sandbox {
     async exec(command: string): Promise<ExecResult> {
         this.requireRunning(`exec ${command}`);
         this.calls.push(`exec:${command}`);
+        if (command.startsWith("git commit --fake-head "))
+            this._headCommit = command.slice("git commit --fake-head ".length);
         const stdout = command.includes("test")
             ? "1 test pass / 0 fail"
             : command.includes("diff")
@@ -164,27 +184,18 @@ class FakeSandbox implements Sandbox {
 
 export type FakeSandboxHandle = FakeSandbox;
 
-export interface SandboxFactory {
-    /** Connect to the existing machine BEFORE creating a replacement; a
-     *  killed/absent sandbox is recreated from the last checkpoint. */
-    connectOrRecreate(
-        runId: string,
-        spec: FakeSandboxSpec
-    ): Promise<{ sandbox: FakeSandbox; recreated: boolean }>;
-    /** Test seam: fresh NEW sandbox without the registry (conformance). */
-    create(runId: string, spec: FakeSandboxSpec): FakeSandbox;
-    byRun(runId: string): FakeSandbox | undefined;
-    readonly createdCount: number;
-}
+export type { SandboxFactory } from "./contract";
+import type { SandboxFactory } from "./contract";
 
-export const createFakeSandboxFactory = (): SandboxFactory => {
+export const createFakeSandboxFactory = () => {
     const registry = new Map<string, FakeSandbox>();
     let createdCount = 0;
 
-    const factory: SandboxFactory = {
-        connectOrRecreate: async (runId, spec) => {
+    const factory = {
+        connectOrRecreate: async (runId: string, spec: FakeSandboxSpec) => {
             const existing = registry.get(runId);
             if (existing && existing.state !== "KILLED") {
+                existing.restoreWorkspace(spec);
                 if (existing.state === "PAUSED") {
                     await existing.resume();
                     return { sandbox: existing, recreated: false };
@@ -196,6 +207,7 @@ export const createFakeSandboxFactory = (): SandboxFactory => {
             const spec2: FakeSandboxSpec = {
                 repository: existing?.repository ?? spec.repository,
                 baseCommit: existing?.baseCommit ?? spec.baseCommit,
+                tracked: existing?.checkpoints.at(-1)?.tracked ?? spec.tracked,
                 initialFiles: existing
                     ? { ...(existing.checkpoints.at(-1)?.files ?? {}) }
                     : spec.initialFiles,
@@ -209,14 +221,21 @@ export const createFakeSandboxFactory = (): SandboxFactory => {
             return { sandbox: fresh, recreated: Boolean(existing) };
         },
 
-        create: (runId, spec) => {
+        create: (runId: string, spec: FakeSandboxSpec) => {
             const sandbox = new FakeSandbox(runId, spec);
             createdCount += 1;
             registry.set(runId, sandbox);
             return sandbox;
         },
 
-        byRun: (runId) => registry.get(runId),
+        destroy: async(runId:string) => {
+            // A tombstone lets tests inspect a deletion performed by another
+            // process. It has no provision() call and consumes no machine slot.
+            const sandbox=registry.get(runId)??new FakeSandbox(runId,{repository:"",baseCommit:"",initialFiles:{}});
+            registry.set(runId,sandbox);
+            await sandbox.kill();
+        },
+        byRun: (runId: string) => registry.get(runId),
 
         get createdCount() {
             return createdCount;

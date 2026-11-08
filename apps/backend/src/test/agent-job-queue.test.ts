@@ -1,3 +1,4 @@
+process.env.AGENT_EXECUTION_MODE = "fake";
 import { describe, test, expect, beforeEach } from "bun:test";
 import { createMemoryJobStore } from "../jobs/memoryJobStore";
 import {
@@ -41,7 +42,7 @@ describe("durable job queue (CP2)", () => {
         expect(results.filter((r) => r.created)).toHaveLength(1);
         expect(
             new Set(results.map((r) => r.job.id)).size,
-            "duplicate enqueue must be a no-op returning the same job"
+            "duplicate enqueue must be a no-op returning the same job",
         ).toBe(1);
         expect(results.every((r) => r.job.status === "QUEUED")).toBe(true);
 
@@ -81,10 +82,10 @@ describe("durable job queue (CP2)", () => {
             await enqueueRunStart(key);
         }
         const claimers = Array.from({ length: 8 }, (_, i) =>
-            store.claimNext(`worker_${i}`, at(0), { leaseMs: 60_000 })
+            store.claimNext(`worker_${i}`, at(0), { leaseMs: 60_000 }),
         );
         const claims = (await Promise.all(claimers)).filter(
-            (c): c is NonNullable<typeof c> => c !== null
+            (c): c is NonNullable<typeof c> => c !== null,
         );
         expect(claims).toHaveLength(3);
         expect(new Set(claims.map((c) => c.job.id)).size).toBe(3);
@@ -93,8 +94,8 @@ describe("durable job queue (CP2)", () => {
         // Leases are alive: nobody else can take anything.
         const later = await Promise.all(
             Array.from({ length: 4 }, (_, i) =>
-                store.claimNext(`late_${i}`, at(30))
-            )
+                store.claimNext(`late_${i}`, at(30)),
+            ),
         );
         expect(later.every((c) => c === null)).toBe(true);
 
@@ -102,8 +103,8 @@ describe("durable job queue (CP2)", () => {
         const reclaimed = (
             await Promise.all(
                 Array.from({ length: 3 }, (_, i) =>
-                    store.claimNext(`reclaimer_${i}`, at(121))
-                )
+                    store.claimNext(`reclaimer_${i}`, at(121)),
+                ),
             )
         ).filter((c): c is NonNullable<typeof c> => c !== null);
         expect(reclaimed).toHaveLength(3);
@@ -111,8 +112,8 @@ describe("durable job queue (CP2)", () => {
             reclaimed.every(
                 (c) =>
                     c.fencingToken === 2 &&
-                    c.job.lockedBy?.startsWith("reclaimer_")
-            )
+                    c.job.lockedBy?.startsWith("reclaimer_"),
+            ),
         ).toBe(true);
     });
 
@@ -129,10 +130,11 @@ describe("durable job queue (CP2)", () => {
         expect(second?.job.lockedBy).toBe("worker_B");
 
         // Zombie worker_A (stale fencing token) can do nothing.
-        expect(await store.renewLease(job.id, "worker_A", 1, at(62))).toBeNull();
+        expect(await store.renewLease(job.id, "worker_A", 1, at(62)),
+        ).toBeNull();
         expect(await store.complete(job.id, "worker_A", 1, at(62))).toBeNull();
         expect(
-            await store.fail(job.id, "worker_A", 1, at(62), "zombie retry")
+            await store.fail(job.id, "worker_A", 1, at(62), "zombie retry"),
         ).toBeNull();
         // Even the right owner with the wrong token is fenced out.
         expect(await store.complete(job.id, "worker_B", 1, at(62))).toBeNull();
@@ -149,7 +151,8 @@ describe("durable job queue (CP2)", () => {
         expect(
             await store.complete(job.id, "worker_B", 2, at(64))
         ).toBeNull();
-        expect(await store.renewLease(job.id, "worker_B", 2, at(64))).toBeNull();
+        expect(await store.renewLease(job.id, "worker_B", 2, at(64)),
+        ).toBeNull();
     });
 
     test("renewLease extends the lease and blocks reclaim until the extended expiry", async () => {
@@ -164,7 +167,7 @@ describe("durable job queue (CP2)", () => {
             "worker_A",
             first!.fencingToken,
             at(20),
-            30_000
+            30_000,
         );
         expect(renewed?.leaseExpiresAt).toBe(at(50));
 
@@ -190,7 +193,7 @@ describe("durable job queue (CP2)", () => {
             c1!.fencingToken,
             at(1),
             "engine crashed",
-            at(31)
+            at(31),
         );
         expect(f1?.status).toBe("QUEUED");
         expect(f1?.availableAt).toBe(at(31));
@@ -208,9 +211,10 @@ describe("durable job queue (CP2)", () => {
             c2!.fencingToken,
             at(32),
             "still broken",
-            at(61)
+            at(61),
         );
-        expect(f2?.status, "attempts(2) >= maxAttempts(2) must be terminal")
+        expect(f2?.status, "attempts(2) >= maxAttempts(2) must be terminal",
+        )
             .toBe("FAILED");
         expect(f2?.lastError).toBe("still broken");
         expect(await store.claimNext("w3", at(200))).toBeNull();
@@ -243,15 +247,19 @@ describe("durable job queue (CP2)", () => {
             first!.job.id,
             "w",
             first!.fencingToken,
-            at(20)
+            at(20),
         );
         expect(done?.status).toBe("COMPLETED");
         expect(await store.claimNext("w3", at(30))).toBeNull();
     });
 
     test("cancel only affects QUEUED jobs; RUNNING/terminal jobs are untouched", async () => {
-        const a = await store.enqueue({ type: "run.start", idempotencyKey: "ca" });
-        const b = await store.enqueue({ type: "run.start", idempotencyKey: "cb" });
+        const a = await store.enqueue({ type: "run.start", idempotencyKey: "ca",
+            availableAt: at(0),
+        });
+        const b = await store.enqueue({ type: "run.start", idempotencyKey: "cb",
+            availableAt: at(0),
+        });
 
         const cancelled = await store.cancelQueued(a.job.id, at(1));
         expect(cancelled?.status).toBe("CANCELLED");
@@ -298,11 +306,11 @@ describe("durable job queue Postgres SQL shape (pinned, CP2)", () => {
         // Both eligibility arms: fresh queued jobs and expired leases.
         expect(CLAIM_NEXT_SQL).toMatch(/"status" = 'QUEUED'/);
         expect(CLAIM_NEXT_SQL).toMatch(
-            /"status" = 'RUNNING' AND "leaseExpiresAt" <= \$\d/
+            /"status" = 'RUNNING' AND "leaseExpiresAt" <= \$\d/,
         );
         // Strictly-increasing fencing token + attempts increment per claim.
         expect(CLAIM_NEXT_SQL).toMatch(
-            /"fencingToken" = j\."fencingToken" \+ 1/
+            /"fencingToken" = j\."fencingToken" \+ 1/,
         );
         expect(CLAIM_NEXT_SQL).toMatch(/"attempts" = j\."attempts" \+ 1/);
         expect(CLAIM_NEXT_SQL).toMatch(/LIMIT 1\s+FOR UPDATE SKIP LOCKED/);
@@ -311,7 +319,7 @@ describe("durable job queue Postgres SQL shape (pinned, CP2)", () => {
 
     test("mutating SQL guards on owner + fencing token; enqueue is idempotent on the key", () => {
         expect(ENQUEUE_SQL).toMatch(
-            /ON CONFLICT \("idempotencyKey"\) WHERE "idempotencyKey" IS NOT NULL DO NOTHING/
+            /ON CONFLICT \("idempotencyKey"\) WHERE "idempotencyKey" IS NOT NULL DO NOTHING/,
         );
         for (const sql of [RENEW_LEASE_SQL, COMPLETE_SQL, FAIL_SQL]) {
             expect(sql).toMatch(/"status" = 'RUNNING'/);
@@ -320,7 +328,8 @@ describe("durable job queue Postgres SQL shape (pinned, CP2)", () => {
         }
         // Fail retries while attempts < maxAttempts, else terminal FAILED.
         expect(FAIL_SQL).toMatch(/"attempts" < "maxAttempts"/);
-        expect(FAIL_SQL).toMatch(/'QUEUED' ELSE 'FAILED'/);
+        expect(FAIL_SQL).toMatch(/'QUEUED'::"JobStatus" ELSE 'FAILED'::"JobStatus"/,
+        );
         // Only QUEUED jobs can be cancelled.
         expect(CANCEL_QUEUED_SQL).toMatch(/"status" = 'QUEUED'/);
         expect(CANCEL_QUEUED_SQL).toMatch(/'CANCELLED'/);
@@ -333,7 +342,7 @@ const makeIssue = (
     id: string,
     title: string,
     sectionId: string,
-    order: number
+    order: number,
 ): MockIssue => ({
     id,
     title,
@@ -390,7 +399,8 @@ const seedJobs = () =>
             },
         ],
         memberships: [
-            { id: "mem_alice", userId: "alice", organizationId: "org_1", role: "ADMIN" },
+            { id: "mem_alice", userId: "alice", organizationId: "org_1", role: "ADMIN",
+            },
         ],
         boards: [
             {
@@ -497,13 +507,15 @@ describe("agent job data layer via prismaMock (CP2)", () => {
             },
         });
         expect(claimed.fencingToken).toBe(2);
-        expect(await prisma.agentJob.count({ where: { status: "RUNNING" } })).toBe(2);
+        expect(await prisma.agentJob.count({ where: { status: "RUNNING" } }),
+        ).toBe(2);
     });
 
     test("deleting an issue or organization cascades to agent jobs", async () => {
         const job = await seedRunWithJob();
         await prisma.issue.delete({ where: { id: "iss_1" } });
-        expect(await prisma.agentJob.findUnique({ where: { id: job.id } })).toBeNull();
+        expect(await prisma.agentJob.findUnique({ where: { id: job.id } }),
+        ).toBeNull();
 
         await prisma.agentRun.create({ data: makeRun("run_2", "iss_1") });
         const survivor = await prisma.agentJob.create({
@@ -511,7 +523,7 @@ describe("agent job data layer via prismaMock (CP2)", () => {
         });
         await prisma.organization.delete({ where: { id: "org_1" } });
         expect(
-            await prisma.agentJob.findUnique({ where: { id: survivor.id } })
+            await prisma.agentJob.findUnique({ where: { id: survivor.id } }),
         ).toBeNull();
     });
 });

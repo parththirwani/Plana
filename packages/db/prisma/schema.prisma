@@ -217,6 +217,9 @@ model AgentRun {
   branchName     String
   status         RunStatus        @default(QUEUED)
   activeIssueId  String?          @unique
+  taskSnapshot   Json             @default("{}")
+  runtime        Json             @default("{}")
+  planContextHash String?
   planVersion    Int              @default(0)
   owner          String?
   leaseExpiresAt DateTime?
@@ -308,6 +311,7 @@ model RunApproval {
   planVersion Int
   decision    ApprovalDecision
   baseCommit  String
+  contextHash String           @default("")
   decidedBy   String
   decidedAt   DateTime         @default(now())
 

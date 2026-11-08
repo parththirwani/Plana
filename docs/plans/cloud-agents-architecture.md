@@ -1,6 +1,6 @@
 # Plana cloud agents architecture
 
-Status: proposed architecture, implementation not yet verified.
+Status: Phase 1 local foundation implemented with PostgreSQL and fake adapters. Real-cloud implementation steps 2–6 and the full release checklist remain incomplete. See [local setup](cloud-agents-local.md) and [foundation verification](cloud-agents-verification.md).
 
 ## 1. Summary and agreed behavior
 

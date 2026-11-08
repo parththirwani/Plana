@@ -1,3 +1,4 @@
+import type { Prisma } from "@repo/db/db";
 // Durable job queue contract (CP2).
 //
 // The queue is the scheduling backbone for agent runs: HTTP handlers only ever
@@ -11,7 +12,7 @@
 //     this is what the test-suite (and dev without a DB) drives.
 //   - PostgresJobStore (jobs/postgresJobStore.ts) — FOR UPDATE SKIP LOCKED +
 //     leases + fencing against the "AgentJob" table. The SQL is pinned by
-//     shape tests; it cannot be executed in this container (no DB).
+//     shape tests and the real-PostgreSQL foundation integration suite.
 
 export type JobStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 
@@ -58,15 +59,18 @@ export const DEFAULT_MAX_ATTEMPTS = 5;
 // All timestamps are ISO strings; every mutating method takes an explicit
 // `now` so the semantics are deterministic and testable without wall clocks.
 export interface JobStore {
+    close?(): Promise<void>;
     /** Idempotent on idempotencyKey: a duplicate enqueue is a no-op that
      *  returns the existing job with created=false. */
-    enqueue(input: EnqueueInput): Promise<EnqueueResult>;
+    enqueue(input: EnqueueInput,
+        tx?: Prisma.TransactionClient,
+    ): Promise<EnqueueResult>;
     /** Atomically claim the earliest-available QUEUED job (or one whose lease
      *  has expired), assigning a strictly-increasing fencing token. */
     claimNext(
         owner: string,
         now: string,
-        opts?: ClaimOptions
+        opts?: ClaimOptions,
     ): Promise<ClaimedJob | null>;
     /** Extend the lease. Returns null (no-op) unless owner+fencing still match
      *  a RUNNING job — a stale token can never extend anything. */
@@ -75,14 +79,14 @@ export interface JobStore {
         owner: string,
         fencingToken: number,
         now: string,
-        leaseMs?: number
+        leaseMs?: number,
     ): Promise<JobRecord | null>;
     /** Mark the job COMPLETED. Guarded by owner+fencing; null = lost lease. */
     complete(
         jobId: string,
         owner: string,
         fencingToken: number,
-        now: string
+        now: string,
     ): Promise<JobRecord | null>;
     /** Record a failure. Retries (status back to QUEUED at retryAt) while
      *  attempts < maxAttempts, otherwise terminal FAILED. Guarded by
@@ -93,13 +97,21 @@ export interface JobStore {
         fencingToken: number,
         now: string,
         error: string,
-        retryAt?: string
+        retryAt?: string,
     ): Promise<JobRecord | null>;
     /** Cancel a job that has not started. Only QUEUED jobs are cancelled;
      *  RUNNING jobs must be driven to fail()/complete() by their fenced owner
      *  (run-level cancellation is a CP5 concern). Returns null when the job is
      *  not in QUEUED. */
     cancelQueued(jobId: string, now: string): Promise<JobRecord | null>;
+    defer(
+        jobId: string,
+        owner: string,
+        fencingToken: number,
+        now: string,
+        retryAt: string,
+    ): Promise<JobRecord | null>;
+    listFailed(): Promise<JobRecord[]>;
     get(jobId: string): Promise<JobRecord | null>;
     findByIdempotencyKey(idempotencyKey: string): Promise<JobRecord | null>;
     listByRun(runId: string): Promise<JobRecord[]>;

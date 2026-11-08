@@ -1,3 +1,4 @@
+process.env.AGENT_EXECUTION_MODE = "fake";
 import {
     describe,
     test,
@@ -81,29 +82,44 @@ const seedData = () =>
             makeUser("erin", "erin@example.com"), // no membership
         ],
         organizations: [
-            { id: "org_1", name: "Acme", slug: "acme", description: null, orgImage: null } as MockOrg,
-            { id: "org_2", name: "Other", slug: "other", description: null, orgImage: null } as MockOrg,
+            { id: "org_1", name: "Acme", slug: "acme", description: null, orgImage: null,
+            } as MockOrg,
+            { id: "org_2", name: "Other", slug: "other", description: null, orgImage: null,
+            } as MockOrg,
         ],
         memberships: [
-            { id: "mem_1", userId: "alice", organizationId: "org_1", role: "ADMIN" } as MockMembership,
-            { id: "mem_2", userId: "bob", organizationId: "org_1", role: "MODERATOR" } as MockMembership,
-            { id: "mem_3", userId: "carol", organizationId: "org_1", role: "MEMBER" } as MockMembership,
-            { id: "mem_4", userId: "dave", organizationId: "org_2", role: "ADMIN" } as MockMembership,
+            { id: "mem_1", userId: "alice", organizationId: "org_1", role: "ADMIN",
+            } as MockMembership,
+            { id: "mem_2", userId: "bob", organizationId: "org_1", role: "MODERATOR",
+            } as MockMembership,
+            { id: "mem_3", userId: "carol", organizationId: "org_1", role: "MEMBER",
+            } as MockMembership,
+            { id: "mem_4", userId: "dave", organizationId: "org_2", role: "ADMIN",
+            } as MockMembership,
         ],
         boards: [
-            { id: "brd_1", title: "Board", description: null, organizationId: "org_1", defaultRepository: "acme/web" } as MockBoard,
-            { id: "brd_2", title: "Other", description: null, organizationId: "org_2", defaultRepository: "other/repo" } as MockBoard,
+            { id: "brd_1", title: "Board", description: null, organizationId: "org_1", defaultRepository: "acme/web",
+            } as MockBoard,
+            { id: "brd_2", title: "Other", description: null, organizationId: "org_2", defaultRepository: "other/repo",
+            } as MockBoard,
         ],
         sections: [
-            { id: "sec_1", title: "Todo", order: 0, boardId: "brd_1" } as MockSection,
-            { id: "sec_2", title: "Todo", order: 0, boardId: "brd_2" } as MockSection,
+            { id: "sec_1", title: "Todo", order: 0, boardId: "brd_1",
+            } as MockSection,
+            { id: "sec_2", title: "Todo", order: 0, boardId: "brd_2",
+            } as MockSection,
         ],
         issues: [
-            { id: "iss_1", title: "Run host", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_1", assigneeIds: [], repository: null } as MockIssue,
-            { id: "iss_2", title: "Api repo host", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_1", assigneeIds: [], repository: "acme/api" } as MockIssue,
-            { id: "iss_3", title: "Perms host", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_1", assigneeIds: [], repository: null } as MockIssue,
-            { id: "iss_4", title: "Admin host", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_1", assigneeIds: [], repository: null } as MockIssue,
-            { id: "iss_9", title: "Foreign", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_2", assigneeIds: [], repository: null } as MockIssue,
+            { id: "iss_1", title: "Run host", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_1", assigneeIds: [], repository: null,
+            } as MockIssue,
+            { id: "iss_2", title: "Api repo host", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_1", assigneeIds: [], repository: "acme/api",
+            } as MockIssue,
+            { id: "iss_3", title: "Perms host", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_1", assigneeIds: [], repository: null,
+            } as MockIssue,
+            { id: "iss_4", title: "Admin host", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_1", assigneeIds: [], repository: null,
+            } as MockIssue,
+            { id: "iss_9", title: "Foreign", description: null, order: 0, priority: "NONE", dueDate: null, sectionId: "sec_2", assigneeIds: [], repository: null,
+            } as MockIssue,
         ],
         orgAgentConfigs: [orgAgentConfig],
     });
@@ -119,7 +135,7 @@ const baseBody = (overrides: Record<string, unknown> = {}) => ({
 const createRunHttp = (
     issueId: string,
     body: Record<string, unknown>,
-    cookie: string | null
+    cookie: string | null,
 ) => http.post(`/api/v1/issues/${issueId}/agent-runs`, body, cookie);
 
 const eventsFor = async (runId: string) =>
@@ -147,7 +163,7 @@ afterAll(() => {
 
 beforeEach(async () => {
     seedData();
-    jobStore = createMemoryJobStore();
+    jobStore = createMemoryJobStore(prismaMock.prisma as any);
     setJobStore(jobStore);
     // Agent realtime hints are asserted in CP3; keep the default publisher out
     // of the picture (no pg pool here) without changing other suites' seams.
@@ -167,28 +183,29 @@ describe("agent run API — capabilities + reads", () => {
     test("capabilities list every engine with explicit unavailable reasons and the org allow-list", async () => {
         const res = await http.get(
             "/api/v1/issues/iss_1/agent-runs/capabilities",
-            tok("carol@example.com")
+            tok("carol@example.com"),
         );
         expect(res.status).toBe(200);
         const body = await json(res);
         expect(typeof body.message).toBe("string");
-        const byId = Object.fromEntries(body.engines.map((e: any) => [e.id, e]));
+        const byId = Object.fromEntries(body.engines.map((e: any) => [e.id, e]),
+        );
         expect(Object.keys(byId).sort()).toEqual([
             "CLAUDE_CODE",
             "CODEX",
             "OPENCODE",
             "PI",
         ]);
-        expect(byId.PI.available).toBe(false);
-        expect(byId.PI.reason.toLowerCase()).toContain("never substituted");
+        expect(byId.PI.available).toBe(true);
+        expect(byId.PI.models.some((m: any) => m.available)).toBe(true);
         const codexModels = Object.fromEntries(
-            byId.CODEX.models.map((m: any) => [m.id, m])
+            byId.CODEX.models.map((m: any) => [m.id, m]),
         );
         expect(codexModels["gpt-5"].available).toBe(true);
         expect(codexModels["gpt-4.1"].available).toBe(false);
         expect(codexModels["gpt-4.1"].reason.length).toBeGreaterThan(10);
         expect(byId.OPENCODE.executionModes.PLAN_AND_APPROVE.available).toBe(
-            false
+            true,
         );
         expect(body.allowedRepositories).toEqual(["acme/web", "acme/api"]);
         expect(body.repositories).toEqual({
@@ -201,26 +218,26 @@ describe("agent run API — capabilities + reads", () => {
     test("capability/list/read endpoints require auth and org membership", async () => {
         const anon = await http.get(
             "/api/v1/issues/iss_1/agent-runs/capabilities",
-            null
+            null,
         );
         expect(anon.status).toBe(401);
 
         const erin = await http.get(
             "/api/v1/issues/iss_1/agent-runs",
-            tok("erin@example.com")
+            tok("erin@example.com"),
         );
         expect(erin.status).toBe(403);
 
         // cross-org member cannot even enumerate another org's runs
         const dave = await http.get(
             "/api/v1/issues/iss_1/agent-runs",
-            tok("dave@example.com")
+            tok("dave@example.com"),
         );
         expect(dave.status).toBe(403);
 
         const missing = await http.get(
             "/api/v1/issues/iss_zzz/agent-runs",
-            tok("carol@example.com")
+            tok("carol@example.com"),
         );
         expect(missing.status).toBe(404);
     });
@@ -229,14 +246,14 @@ describe("agent run API — capabilities + reads", () => {
         const created = await createRunHttp(
             "iss_1",
             baseBody(),
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(created.status).toBe(201);
         const { run } = await json(created);
 
         const list = await http.get(
             "/api/v1/issues/iss_1/agent-runs",
-            tok("carol@example.com")
+            tok("carol@example.com"),
         );
         expect(list.status).toBe(200);
         const listBody = await json(list);
@@ -244,14 +261,14 @@ describe("agent run API — capabilities + reads", () => {
 
         const state = await http.get(
             `/api/v1/agent-runs/${run.id}`,
-            tok("carol@example.com")
+            tok("carol@example.com"),
         );
         expect(state.status).toBe(200);
         expect((await json(state)).run.status).toBe("QUEUED");
 
         const page1 = await http.get(
             `/api/v1/agent-runs/${run.id}/events?afterSequence=0&limit=1`,
-            tok("carol@example.com")
+            tok("carol@example.com"),
         );
         expect(page1.status).toBe(200);
         const p1 = await json(page1);
@@ -262,7 +279,7 @@ describe("agent run API — capabilities + reads", () => {
 
         const page2 = await http.get(
             `/api/v1/agent-runs/${run.id}/events?afterSequence=1`,
-            tok("carol@example.com")
+            tok("carol@example.com"),
         );
         const p2 = await json(page2);
         expect(p2.events).toEqual([]);
@@ -271,12 +288,12 @@ describe("agent run API — capabilities + reads", () => {
 
         const forbidden = await http.get(
             `/api/v1/agent-runs/${run.id}`,
-            tok("dave@example.com")
+            tok("dave@example.com"),
         );
         expect(forbidden.status).toBe(403);
         const missingRun = await http.get(
             "/api/v1/agent-runs/run_zzz",
-            tok("carol@example.com")
+            tok("carol@example.com"),
         );
         expect(missingRun.status).toBe(404);
     });
@@ -291,7 +308,7 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
                 executionMode: "PLAN_AND_APPROVE",
                 repository: "acme/web",
             }),
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(res.status).toBe(201);
         const body = await json(res);
@@ -343,25 +360,28 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
             const res = await createRunHttp(
                 "iss_1",
                 { model: "gpt-5", ...body } as any,
-                tok("bob@example.com")
+                tok("bob@example.com"),
             );
             expect(res.status).toBe(400);
             expect((await json(res)).message).toBe(
-                "Fields not according to schema"
+                "Fields not according to schema",
             );
         }
         expect(
-            (await prisma.agentRun.findMany({ where: { issueId: "iss_1" } })) as any[]
+            (await prisma.agentRun.findMany({ where: { issueId: "iss_1" },
+            })) as any[],
         ).toHaveLength(0);
     });
 
     test("duplicate idempotency key replays the same run and does not double-enqueue", async () => {
         const body = baseBody({ idempotencyKey: "same-key" });
-        const first = await createRunHttp("iss_1", body, tok("bob@example.com"));
+        const first = await createRunHttp("iss_1", body, tok("bob@example.com"),
+        );
         expect(first.status).toBe(201);
         const { run } = await json(first);
 
-        const second = await createRunHttp("iss_1", body, tok("bob@example.com"));
+        const second = await createRunHttp("iss_1", body, tok("bob@example.com"),
+        );
         expect(second.status).toBe(200);
         const replay = await json(second);
         expect(replay.replayed).toBe(true);
@@ -375,11 +395,13 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
     });
 
     test("a second active run for the same issue is a 409 with the existing run", async () => {
-        const first = await createRunHttp("iss_1", baseBody(), tok("bob@example.com"));
+        const first = await createRunHttp("iss_1", baseBody(), tok("bob@example.com"),
+        );
         expect(first.status).toBe(201);
         const { run } = await json(first);
 
-        const second = await createRunHttp("iss_1", baseBody(), tok("alice@example.com"));
+        const second = await createRunHttp("iss_1", baseBody(), tok("alice@example.com"),
+        );
         expect(second.status).toBe(409);
         const body = await json(second);
         expect(body.code).toBe("ACTIVE_RUN_EXISTS");
@@ -394,14 +416,14 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
             reasonPart: string;
         }> = [
             {
-                body: { engine: "PI", model: "pi-1" },
-                field: "engine",
-                reasonPart: "never substituted",
+                body: { engine: "PI", model: "pi-unavailable" },
+                field: "model",
+                reasonPart: "excluded",
             },
             {
                 body: { engine: "CODEX", model: "gpt-4.1" },
                 field: "model",
-                reasonPart: "retired",
+                reasonPart: "excluded",
             },
             {
                 body: { engine: "CODEX", model: "nope-model" },
@@ -439,13 +461,14 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
                 body: {
                     engine: "OPENCODE",
                     model: "opencode-linear",
-                    executionMode: "PLAN_AND_APPROVE",
+                    options: { thinking: "on" },
                 },
-                field: "executionMode",
-                reasonPart: "pause-on-plan",
+                field: "options.thinking",
+                reasonPart: "does not support option",
             },
             {
-                body: { engine: "CODEX", model: "gpt-5", repository: "evil/repo" },
+                body: { engine: "CODEX", model: "gpt-5", repository: "evil/repo",
+                },
                 field: "repository",
                 reasonPart: "allowed repositories",
             },
@@ -455,14 +478,14 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
             const res = await createRunHttp(
                 "iss_1",
                 baseBody(attempt.body),
-                tok("bob@example.com")
+                tok("bob@example.com"),
             );
             expect(res.status).toBe(400);
             const body = await json(res);
             expect(body.code).toBe("UNSUPPORTED_CAPABILITY");
             expect(body.field).toBe(attempt.field);
             expect(String(body.message).toLowerCase()).toContain(
-                attempt.reasonPart.toLowerCase()
+                attempt.reasonPart.toLowerCase(),
             );
         }
 
@@ -471,7 +494,8 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
             where: { issueId: "iss_1" },
         })) as any[];
         expect(runs).toHaveLength(0);
-        expect((await prisma.agentRun.findMany({ where: {} })) as any[]).toHaveLength(
+        expect((await prisma.agentRun.findMany({ where: {} })) as any[],
+        ).toHaveLength(
             0
         );
     });
@@ -481,7 +505,7 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
         const viaBody = await createRunHttp(
             "iss_1",
             baseBody({ repository: "acme/api" }),
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(viaBody.status).toBe(201);
         expect((await json(viaBody)).run.repository).toBe("acme/api");
@@ -490,7 +514,7 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
         const viaIssue = await createRunHttp(
             "iss_2",
             baseBody(),
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(viaIssue.status).toBe(201);
         expect((await json(viaIssue)).run.repository).toBe("acme/api");
@@ -499,7 +523,7 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
         const noConfig = await createRunHttp(
             "iss_9",
             baseBody({ repository: "other/repo" }),
-            tok("dave@example.com")
+            tok("dave@example.com"),
         );
         expect(noConfig.status).toBe(400);
         const body = await json(noConfig);
@@ -509,22 +533,103 @@ describe("agent run API — create + permissions + capabilities enforcement", ()
     });
 
     test("permission matrix: member cannot launch, moderator and admin can, non-members and strangers cannot", async () => {
-        const asMember = await createRunHttp("iss_1", baseBody(), tok("carol@example.com"));
+        const asMember = await createRunHttp("iss_1", baseBody(), tok("carol@example.com"),
+        );
         expect(asMember.status).toBe(403);
 
-        const asErin = await createRunHttp("iss_1", baseBody(), tok("erin@example.com"));
+        const asErin = await createRunHttp("iss_1", baseBody(), tok("erin@example.com"),
+        );
         expect(asErin.status).toBe(403);
 
-        const asStranger = await createRunHttp("iss_1", baseBody(), tok("dave@example.com"));
+        const asStranger = await createRunHttp("iss_1", baseBody(), tok("dave@example.com"),
+        );
         expect(asStranger.status).toBe(403);
 
         const anon = await createRunHttp("iss_1", baseBody(), null);
         expect(anon.status).toBe(401);
 
-        const asModerator = await createRunHttp("iss_3", baseBody(), tok("bob@example.com"));
+        const asModerator = await createRunHttp("iss_3", baseBody(), tok("bob@example.com"),
+        );
         expect(asModerator.status).toBe(201);
 
-        const asAdmin = await createRunHttp("iss_4", baseBody(), tok("alice@example.com"));
+        const asAdmin = await createRunHttp("iss_4", baseBody(), tok("alice@example.com"),
+        );
         expect(asAdmin.status).toBe(201);
+    });
+});
+
+describe("transactional HTTP launch failures", () => {
+    test("enqueue failure rolls back run, event and slot; retry creates real work", async () => {
+        const original = jobStore.enqueue.bind(jobStore);
+        jobStore.enqueue = async () => {
+            throw new Error("injected enqueue failure");
+        };
+        const body = baseBody();
+        const before = await prisma.runEvent.findMany({ where: {} });
+        const first = await createRunHttp(
+            "iss_1",
+            body,
+            tok("bob@example.com"),
+        );
+        expect(first.status).toBe(500);
+        expect(
+            await prisma.agentRun.findMany({ where: { issueId: "iss_1" } }),
+        ).toHaveLength(0);
+        expect(await prisma.runEvent.findMany({ where: {} })).toEqual(before);
+        jobStore.enqueue = original;
+        const retry = await createRunHttp(
+            "iss_1",
+            body,
+            tok("bob@example.com"),
+        );
+        expect(retry.status).toBe(201);
+        expect(
+            await jobStore.listByRun((await json(retry)).run.id),
+        ).toHaveLength(1);
+    });
+});
+
+describe("agent policy configuration", () => {
+    test("only an admin changes policy; permitted repositories can be selected without SQL", async () => {
+        const path = "/api/v1/organizations/org_1/agent-config";
+        const policy = {
+            allowedRepositories: ["acme/new"],
+            defaultEngine: "PI",
+            defaultModel: "pi-1",
+        };
+        expect(
+            (await http.put(path, policy, tok("bob@example.com"))).status,
+        ).toBe(403);
+        expect(
+            (await http.put(path, policy, tok("dave@example.com"))).status,
+        ).toBe(403);
+        expect(
+            (await http.put(path, policy, tok("alice@example.com"))).status,
+        ).toBe(200);
+        expect(
+            (
+                await http.patch(
+                    "/api/v1/boards/brd_1/agent-repository",
+                    { repository: "evil/repo" },
+                    tok("bob@example.com"),
+                )
+            ).status,
+        ).toBe(400);
+        expect(
+            (
+                await http.patch(
+                    "/api/v1/boards/brd_1/agent-repository",
+                    { repository: "acme/new" },
+                    tok("bob@example.com"),
+                )
+            ).status,
+        ).toBe(200);
+        const response = await createRunHttp(
+            "iss_1",
+            baseBody({ engine: "PI", model: "pi-1" }),
+            tok("bob@example.com"),
+        );
+        expect(response.status).toBe(201);
+        expect((await json(response)).run.repository).toBe("acme/new");
     });
 });

@@ -1,0 +1,38 @@
+name: Agent foundation
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable-ci-password
+          POSTGRES_DB: plana_ci_test
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:disposable-ci-password@127.0.0.1:5432/plana_ci_test
+      PLANA_PG_TEST_URL: postgresql://postgres:disposable-ci-password@127.0.0.1:5432/plana_ci_test
+      AGENT_EXECUTION_MODE: fake
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bunx prisma generate && bunx prisma migrate deploy
+        working-directory: packages/db
+      - run: bun run check-types && bun run test
+        working-directory: apps/backend
+      - run: bun run test:agents:pg
+        working-directory: apps/backend
+      - run: bun test
+        working-directory: apps/websocket

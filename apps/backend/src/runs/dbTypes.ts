@@ -88,6 +88,9 @@ export type AgentRunRow = {
     activeIssueId: string | null;
     /// Instant the worker first started executing (CP-D resume detection).
     attemptedAt: Date | string | null;
+    taskSnapshot?: JsonValue;
+    runtime?: JsonValue;
+    planContextHash?: string | null;
     planVersion: number;
     owner: string | null;
     leaseExpiresAt: Date | string | null;
@@ -112,6 +115,7 @@ export type RunApprovalRow = {
     planVersion: number;
     decision: ApprovalDecisionValue;
     baseCommit: string;
+    contextHash?: string;
     decidedBy: string;
     decidedAt: Date | string;
 };
@@ -146,7 +150,8 @@ export const toRunExecutionMode = (value: string): RunExecutionMode => {
         throw new RunError(
             "INVALID_INPUT",
             `Unknown execution mode: ${value}`,
-            { executionMode: value, allowed: [...RUN_EXECUTION_MODES] }
+            { executionMode: value, allowed: [...RUN_EXECUTION_MODES],
+            },
         );
     }
     return value;
@@ -208,6 +213,9 @@ export const jsonRecord = (value: unknown): Record<string, unknown> => {
  *  `status` / `activeIssueId` are owned by the transition guard alone and
  *  cannot be smuggled through a patch object. */
 export type RunCommitPatch = {
+    runtime?: JsonInput;
+    taskSnapshot?: JsonInput;
+    planContextHash?: string | null;
     planVersion?: number;
     baseCommit?: string | null;
     branchName?: string;
@@ -218,6 +226,9 @@ export type RunCommitPatch = {
  *  `Prisma.InputJsonValue` column, so a domain `Record<string, unknown>` must
  *  go through `toJsonInput` instead of being cast. */
 export type RunUpdateData = {
+    runtime?: JsonInput;
+    taskSnapshot?: JsonInput;
+    planContextHash?: string | null;
     status: PrismaRunStatus;
     activeIssueId?: string | null;
     planVersion?: number;
@@ -231,9 +242,14 @@ export type RunUpdateData = {
  *  wrote is not a state-machine transition. */
 export const toRunUpdateData = (
     status: RunStatusValue,
-    patch: RunCommitPatch & { activeIssueId?: string | null } = {}
+    patch: RunCommitPatch & { activeIssueId?: string | null } = {},
 ): RunUpdateData => {
     const data: RunUpdateData = { status };
+    if (patch.runtime !== undefined) data.runtime = patch.runtime;
+    if (patch.taskSnapshot !== undefined)
+        data.taskSnapshot = patch.taskSnapshot;
+    if (patch.planContextHash !== undefined)
+        data.planContextHash = patch.planContextHash;
     if ("activeIssueId" in patch) data.activeIssueId = patch.activeIssueId ?? null;
     if (patch.planVersion !== undefined) data.planVersion = patch.planVersion;
     if (patch.baseCommit !== undefined) data.baseCommit = patch.baseCommit;
@@ -249,7 +265,30 @@ export const toRunStatusValue = (value: unknown): RunStatusValue => {
     if (!isRunStatus(value)) {
         throw new RunError("INVALID_INPUT", `Unknown run status: ${String(value)}`, {
             status: value,
-        });
+        },
+        );
     }
     return value;
+};
+
+// Delivery and exhaustion receipts are monotonic, even when a heartbeat and
+// stage snapshot commit in different orders.
+export const mergeRuntimeReceipts = (
+    current: unknown,
+    next: unknown,
+): JsonInput => {
+    const before = jsonRecord(current),
+        after = jsonRecord(next);
+    for (const key of ["deliveredInputs", "handledFailures"]) {
+        const a = Array.isArray(before[key]) ? before[key] : [];
+        const b = Array.isArray(after[key]) ? after[key] : [];
+        after[key] = [
+            ...new Set(
+                [...a, ...b].filter(
+                    (id): id is string => typeof id === "string",
+                ),
+            ),
+        ];
+    }
+    return toJsonInput(after);
 };

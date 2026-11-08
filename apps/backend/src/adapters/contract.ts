@@ -1,3 +1,4 @@
+import type { SessionState } from "./recovery";
 // Engine + sandbox adapter contracts (CP5).
 //
 // docs/plans/cloud-agents-architecture.md: "All four implement the same
@@ -41,7 +42,7 @@ export class EngineError extends Error {
     constructor(
         code: EngineErrorCode,
         message: string,
-        details: Record<string, unknown> = {}
+        details: Record<string, unknown> = {},
     ) {
         super(message);
         this.name = "EngineError";
@@ -109,6 +110,7 @@ export interface Sandbox {
     readTrackedFile(path: string): Promise<string | null>;
     trackedPaths(): Promise<string[]>;
     exec(command: string): Promise<ExecResult>;
+    snapshotFiles(): Record<string, string>;
 }
 
 // ----------------------------------------------------------------- engine --
@@ -174,6 +176,7 @@ export type EngineSessionExport = {
     phase: string;
     usage: EngineUsageReport;
     secretRedactions: string[];
+    state?: SessionState;
 };
 
 /**
@@ -201,19 +204,45 @@ export interface EngineAdapter {
      *  plan version; approval of the stale plan can never resume work. */
     regeneratePlan(
         sessionId: string,
-        input: { baseCommit?: string; reason: string }
+        input: { baseCommit?: string; reason: string },
     ): Promise<{ planVersion: number; plan: string }>;
 
     resume(
         sessionId: string,
-        approved: EngineResumeInput
+        approved: EngineResumeInput,
     ): Promise<{ sessionId: string }>;
 
-    sendInput(sessionId: string, text: string): Promise<{ delivered: true }>;
+    sendInput(sessionId: string, text: string,
+        messageId?: string,
+    ): Promise<{ delivered: true }>;
 
     cancel(sessionId: string): Promise<{ stopped: boolean }>;
+
+    restoreSession(
+        exported: EngineSessionExport,
+        sandbox: Sandbox,
+    ): Promise<{ sessionId: string }>;
 
     exportSession(sessionId: string): Promise<EngineSessionExport>;
 
     reportUsage(sessionId: string): Promise<EngineUsageReport>;
+}
+
+export type SandboxSpec = {
+    repository: string;
+    baseCommit: string;
+    headCommit?: string;
+    initialFiles?: Record<string, string>;
+    tracked?: string[];
+};
+export interface SandboxFactory {
+    /** Idempotent teardown by run id. Never provisions a replacement machine. */
+    destroy(runId:string):Promise<void>;
+    connectOrRecreate(
+        runId: string,
+        spec: SandboxSpec,
+    ): Promise<{ sandbox: Sandbox; recreated: boolean }>;
+    create(runId: string, spec: SandboxSpec): Sandbox;
+    byRun(runId: string): Sandbox | undefined;
+    readonly createdCount: number;
 }

@@ -1,24 +1,37 @@
-import { EngineError, type EngineAdapter, type EngineEvent, type Sandbox } from "../adapters/contract";
-import type { SandboxFactory } from "../adapters/fakeSandbox";
+import { assertPublicationArtifact } from "./artifactPolicy";
+import { prisma } from "@repo/db/db";
+import {
+    type EngineAdapter,
+    type EngineEvent,
+    type Sandbox,
+} from "../adapters/contract";
+import type { SandboxFactory } from "../adapters/contract";
 import type { EngineAdapterRegistry } from "../adapters/registry";
-import { jsonRecord, type AgentRunRow, type RunCommitPatch } from "../runs/dbTypes";
-import type { RunOwnership } from "../runs/runRepository";
+import { toJsonInput, jsonRecord, type AgentRunRow } from "../runs/dbTypes";
 import { appendRunEvent } from "../runs/eventLog";
 import {
-    failRun,
+    assertRunOwnership,
     getRunById,
-    pinRunBaseCommit,
-    setRunPlanVersion,
+    mutateRun,
     transitionRun,
+    type RunOwnership,
 } from "../runs/runRepository";
+import {
+    currentTaskFingerprint,
+    readTask,
+    taskFingerprint,
+} from "../runs/taskContext";
 import { isTerminalRunStatus, type RunStatus } from "../runs/status";
+import { RunError } from "../runs/errors";
 import type { JobStore, JobRecord } from "../jobs/types";
-
-// Worker execution flows (CP5). All provider/sandbox interaction happens
-// through the injected contracts — the worker never talks to a queue backend,
-// an engine binary, a sandbox API or GitHub directly. Publication is recorded
-// as a durable INTENT event consumed later by the publisher service (out of
-// scope in this container; the sandbox provably never holds write creds).
+import {
+    completionSchema,
+    readRuntime,
+    saveRuntime,
+    recordInputReceipt,
+    type RunRuntime,
+} from "./runtime";
+import type { Checks, Publisher } from "./services";
 
 export type WorkerDeps = {
     store: JobStore;
@@ -26,10 +39,13 @@ export type WorkerDeps = {
     sandboxes: SandboxFactory;
     owner: string;
     now: () => string;
-    /** Test/observability hook fired after each engine event is persisted —
-     *  BEFORE the worker re-reads the run status (which is how a cancel
-     *  landing mid-stream is observed). */
-    afterEvent?: (info: { runId: string; jobId: string; event: EngineEvent }) => Promise<void> | void;
+    checks: Checks;
+    publisher: Publisher;
+    afterEvent?: (info: {
+        runId: string;
+        jobId: string;
+        event: EngineEvent;
+    }) => Promise<void> | void;
 };
 
 export type RunSessionRef = {
@@ -37,28 +53,46 @@ export type RunSessionRef = {
     adapter: EngineAdapter;
     sessionId: string;
     sandbox: Sandbox;
-    completedData?: Record<string, unknown>;
 };
 
 export type WorkerContext = {
     deps: WorkerDeps;
     sessions: Map<string, RunSessionRef>;
-    /**
-     * THE WORKER'S IDENTITY FOR THE CURRENT ATTEMPT: the queue owner plus the
-     * fencing token its claim returned. `runWorker` refreshes it on every claim.
-     * Every run mutation carries it, so a worker whose lease expired — or whose
-     * job was reclaimed by another process — is fenced out by the data layer
-     * instead of overwriting a newer owner's state.
-     */
-    ownership?: RunOwnership;
+    ownership: RunOwnership;
+    signal: AbortSignal;
+    onHeartbeat?: () => Promise<void>;
+    appliedInputs: Set<string>;
+    withInputs: import("../lib/serialLock").SerialLock;
 };
 
 export type JobClaim = { jobId: string; fencingToken: number };
 
+export const abortable = <T>(
+    signal: AbortSignal,
+    work: Promise<T>,
+): Promise<T> => {
+    signal.throwIfAborted();
+    return new Promise<T>((resolve, reject) => {
+        const abort = () => reject(signal.reason ?? new Error("Aborted"));
+        signal.addEventListener("abort", abort, { once: true });
+        work.then(resolve, reject).finally(() =>
+            signal.removeEventListener("abort", abort),
+        );
+    });
+};
+const fresh = async (ctx: WorkerContext, id: string) => {
+    ctx.signal.throwIfAborted();
+    const run = await getRunById(id);
+    if (!run) throw new RunError("NOT_FOUND", "Run not found");
+    if (isTerminalRunStatus(run.status))
+        throw new RunError("TERMINAL_STATE", `Run is ${run.status}`);
+    return run;
+};
 const emit = (
+    ctx: WorkerContext,
     run: AgentRunRow,
     type: Parameters<typeof appendRunEvent>[0]["type"],
-    data: Record<string, unknown>
+    data: Record<string, unknown>,
 ) =>
     appendRunEvent({
         runId: run.id,
@@ -66,440 +100,570 @@ const emit = (
         status: run.status,
         type,
         data,
+        claim: ctx.ownership,
     });
-
-/**
- * The worker's only way to move a run.
- *
- * `expectedFrom` is the status THIS worker read, and `ownership` is the lease +
- * fencing token its claim returned — both are mandatory here. A worker whose
- * lease expired mid-step, or whose sibling already cancelled the run, gets a
- * rejected transition (and its durable side effects roll back) instead of
- * overwriting the state it never read.
- */
-const transition = async (
+const move = (
     ctx: WorkerContext,
     run: AgentRunRow,
     to: RunStatus,
-    data: Record<string, unknown> = {},
-    commit?: RunCommitPatch
+    runtime?: RunRuntime,
+    extraEvents?: Parameters<typeof transitionRun>[0]["extraEvents"],
 ) => {
-    const updated = await transitionRun({
+    if (["VALIDATING", "REVIEWING", "PUBLISHING"].includes(to))
+        ctx.onHeartbeat = undefined;
+    return transitionRun({
         runId: run.id,
-        to,
         expectedFrom: run.status,
+        to,
         claim: ctx.ownership,
-        data: { via: "worker", ...data },
-        ...(commit ? { commit } : {}),
+        data: { via: "worker" },
+        ...(runtime ? { commit: { runtime: toJsonInput(runtime) } } : {}),
+        ...(extraEvents ? { extraEvents } : {}),
     });
-    return updated;
 };
 
-const leaseStillOurs = async (deps: WorkerDeps, claim: JobClaim): Promise<boolean> => {
-    const job = await deps.store.get(claim.jobId);
-    return (
-        !!job &&
-        job.status === "RUNNING" &&
-        job.lockedBy === deps.owner &&
-        job.fencingToken === claim.fencingToken
-    );
-};
-
-const ensureSandbox = async (ctx: WorkerContext, run: AgentRunRow): Promise<{ sandbox: Sandbox; recreated: boolean }> => {
-    const baseCommit = run.baseCommit ?? `base-of-${run.id}`;
-    const { sandbox, recreated } = await ctx.deps.sandboxes.connectOrRecreate(run.id, {
-        repository: run.repository,
-        baseCommit,
-    });
-    if (run.baseCommit === null || run.baseCommit === undefined) {
-        await pinRunBaseCommit(run.id, sandbox.baseCommit, ctx.ownership);
-    }
-    return { sandbox, recreated };
-};
-
-const startSession = async (
+const snapshot = async (
     ctx: WorkerContext,
     run: AgentRunRow,
-    sandbox: Sandbox
+    runtime: RunRuntime,
+    ref: RunSessionRef,
+) => {
+    runtime.session = await abortable(
+        ctx.signal,
+        ref.adapter.exportSession(ref.sessionId),
+    );
+    runtime.checkpoint = await abortable(
+        ctx.signal,
+        ref.sandbox.checkpoint("durable-stage"),
+    );
+    await saveRuntime(run.id, runtime, ctx.ownership);
+};
+const ensureSession = async (
+    ctx: WorkerContext,
+    run: AgentRunRow,
+    runtime: RunRuntime,
 ): Promise<RunSessionRef> => {
+    // Durable export and checkpoint are authoritative. An empty process cache
+    // is expected after a restart and must not turn required work into a no-op.
+
+    const { sandbox, recreated } = await abortable(
+        ctx.signal,
+        ctx.deps.sandboxes.connectOrRecreate(run.id, {
+            repository: run.repository,
+            baseCommit: run.baseCommit ?? `base-of-${run.id}`,
+            ...(runtime.checkpoint
+                ? {
+                      initialFiles: runtime.checkpoint.files,
+                      tracked: runtime.checkpoint.tracked,
+                      headCommit: runtime.checkpoint.headCommit ?? undefined,
+                  }
+                : {}),
+        }),
+    );
+    if (!run.baseCommit) {
+        run = await mutateRun({
+            runId: run.id,
+            baseCommit: sandbox.baseCommit,
+            claim: ctx.ownership,
+        });
+    }
     const adapter = ctx.deps.registry.require(run.engine);
-    const { sessionId } = await adapter.start({
-        runId: run.id,
-        repository: run.repository,
-        baseCommit: sandbox.baseCommit,
-        executionMode: run.executionMode,
-        model: run.model,
-        options: (run.options ?? {}) as Record<string, unknown>,
-        instructions: `Implement issue ${run.issueId} on branch ${run.branchName}.`,
-        sandbox,
-    });
-    const ref: RunSessionRef = { runId: run.id, adapter, sessionId, sandbox };
+    let sessionId: string;
+    if (runtime.session) {
+        ({ sessionId } = await abortable(
+            ctx.signal,
+            adapter.restoreSession(runtime.session, sandbox),
+        ));
+    } else {
+        const task = await readTask(prisma, run.issueId);
+        runtime.planningContext = taskFingerprint(
+            task,
+            run.repository,
+            run.baseCommit,
+        );
+        ({ sessionId } = await abortable(
+            ctx.signal,
+            adapter.start({
+                runId: run.id,
+                repository: run.repository,
+                baseCommit: sandbox.baseCommit,
+                executionMode: run.executionMode,
+                model: run.model,
+                options: jsonRecord(run.options),
+                instructions: JSON.stringify({
+                    originalTask: run.taskSnapshot,
+                    currentTask: task,
+                    branch: run.branchName,
+                }),
+                sandbox,
+            }),
+        ));
+    }
+    const ref = { runId: run.id, adapter, sessionId, sandbox };
     ctx.sessions.set(run.id, ref);
+    await snapshot(ctx, run, runtime, ref);
+    ctx.onHeartbeat = () => deliverMessages(ctx, run, runtime, ref, true);
+    await emit(ctx, run, "run.sandbox.lifecycle", {
+        phase: runtime.session && recreated ? "recreated" : "provisioned",
+        sessionId,
+    });
     return ref;
 };
 
-type StreamOutcome =
-    | { cancelled: false }
-    | { cancelled: true; reason: string; runStatus?: string };
-
-/** Persist every engine event BEFORE moving on; after each event re-read the
- *  run so a cancellation that lands mid-stream is observed and enforced:
- *  engine stopped, sandbox cleaned, and NO publication intent recorded. */
-const streamSession = async (
+const deliverMessages = async (
     ctx: WorkerContext,
     run: AgentRunRow,
-    jobId: string,
-    ref: RunSessionRef
-): Promise<StreamOutcome> => {
-    for await (const event of ref.adapter.streamEvents(ref.sessionId)) {
-        await emit(run, "run.engine.output", {
-            kind: event.type,
-            sessionId: ref.sessionId,
-            ...(event.text !== undefined ? { text: event.text } : {}),
-            ...(event.data ?? {}),
-        });
-        if (event.type === "completed") {
-            ref.completedData = event.data ?? {};
-        }
-        if (event.type === "cancelled") {
-            return { cancelled: true, reason: String((event.data as any)?.reason ?? "engine-stopped") };
-        }
-        await ctx.deps.afterEvent?.({ runId: run.id, jobId, event });
-        const fresh = await getRunById(run.id);
-        if (fresh && isTerminalRunStatus(fresh.status)) {
-            await ref.adapter.cancel(ref.sessionId);
-            await ref.sandbox.kill();
-            ctx.sessions.delete(run.id);
-            return {
-                cancelled: true,
-                reason: "late-engine-result-blocked-by-run-state",
-                runStatus: fresh.status,
-            };
-        }
-    }
-    return { cancelled: false };
-};
-
-/** VALIDATING -> REVIEWING -> PUBLISHING -> durable INTENT -> COMPLETED.
- *  Two guards run before the intent is written:
- *    * the run must still be non-terminal (cancel prevents publication);
- *    * the job lease/fencing token must still belong to this worker (a
- *      zombied previous owner can never publish). */
-const publishTail = async (
-    ctx: WorkerContext,
-    run: AgentRunRow,
-    claim: JobClaim,
-    ref: RunSessionRef
-): Promise<string> => {
-    let current = await transition(ctx, run, "VALIDATING", { stage: "validation" });
-    current = await transition(ctx, current, "REVIEWING", { stage: "review" });
-
-    const fresh = await getRunById(run.id);
-    if (!fresh || isTerminalRunStatus(fresh.status)) {
-        await ref.adapter.cancel(ref.sessionId);
-        return `ignored-terminal-late:${fresh?.status ?? "missing"}`;
-    }
-    if (!(await leaseStillOurs(ctx.deps, claim))) {
-        // Lease was reclaimed elsewhere: stop the engine, publish NOTHING.
-        await ref.adapter.cancel(ref.sessionId);
-        return "aborted-lost-lease";
-    }
-
-    current = await transition(ctx, fresh, "PUBLISHING", { stage: "publish" });
-    const completed = (ref.completedData ?? {}) as Record<string, unknown>;
-    await emit(current, "run.publication.intent", {
-        kind: "INTENT",
-        branch: current.branchName,
-        baseCommit: completed.baseCommit ?? current.baseCommit,
-        headCommit: completed.headCommit ?? null,
-        changedFiles: completed.changedFiles ?? [],
-        // The worker NEVER talks to GitHub: this event is the durable intent
-        // the publisher service consumes later (out of scope in this
-        // container — UNVERIFIED ledger).
-        githubContacted: false,
-        publication: "intent-only",
-    });
-    await transition(ctx, current, "COMPLETED", { stage: "completed" });
-    await ref.sandbox.kill();
-    return "completed";
-};
-
-const pauseForApproval = async (
-    ctx: WorkerContext,
-    run: AgentRunRow,
+    runtime: RunRuntime,
     ref: RunSessionRef,
-    reason: string
-): Promise<string> => {
-    const pause = await ref.adapter.pauseForApproval(ref.sessionId);
-    await setRunPlanVersion(run.id, pause.planVersion, ctx.ownership);
-    const updated = await transition(ctx, run, "AWAITING_APPROVAL", {
-        stage: "plan-ready",
-        planVersion: pause.planVersion,
+    receiptOnly = false,
+) =>
+    ctx.withInputs(async () => {
+        const events = await prisma.runEvent.findMany({
+            where: { runId: run.id, type: "run.message" },
+            orderBy: { sequence: "asc" },
+        });
+        for (const event of events) {
+            const data = jsonRecord(event.data);
+            if (data.kind !== "user-message") continue;
+            const id = String(data.messageId ?? `event:${event.sequence}`);
+            if (ctx.appliedInputs.has(id)) continue;
+            await abortable(
+                ctx.signal,
+                ref.adapter.sendInput(
+                    ref.sessionId,
+                    String(data.text ?? ""),
+                    id,
+                ),
+            );
+            ctx.appliedInputs.add(id);
+            if (!runtime.deliveredInputs.includes(id))
+                runtime.deliveredInputs.push(id);
+            await recordInputReceipt(
+                run.id,
+                id,
+                {
+                    kind: "message-delivery",
+                    messageId: id,
+                    text: data.text,
+                    delivered: true,
+                    sessionId: ref.sessionId,
+                    eventSequence: event.sequence,
+                },
+                ctx.ownership,
+            );
+            if (!receiptOnly) await snapshot(ctx, run, runtime, ref);
+        }
     });
-    await emit(updated, "run.plan.updated", {
-        planVersion: pause.planVersion,
-        plan: pause.plan,
-        baseCommit: updated.baseCommit,
-        checkpointId: pause.checkpointId,
-        reason,
-    });
-    await emit(updated, "run.approval.requested", {
-        planVersion: pause.planVersion,
-        baseCommit: updated.baseCommit,
+
+const stream = async (
+    ctx: WorkerContext,
+    run: AgentRunRow,
+    runtime: RunRuntime,
+    ref: RunSessionRef,
+    jobId: string,
+) => {
+    const iterator = ref.adapter
+        .streamEvents(ref.sessionId)
+        [Symbol.asyncIterator]();
+    try {
+        for (;;) {
+            const item = await abortable(ctx.signal, iterator.next());
+            if (item.done) break;
+            const event = item.value;
+            await fresh(ctx, run.id);
+            if (event.type === "cancelled")
+                throw new RunError(
+                    "INVALID_INPUT",
+                    "Engine stopped before completion",
+                );
+            if (event.type === "validation" && event.data?.ok !== true)
+                runtime.engineValidationFailed = true;
+            if (event.type === "completed") {
+                const completed = completionSchema.safeParse(event.data);
+                if (!completed.success)
+                    throw new RunError(
+                        "INVALID_INPUT",
+                        "Engine completion is missing valid base/head/files",
+                    );
+                runtime.completed = completed.data;
+            }
+            // Session cursor/checkpoint and its output event commit together.
+            runtime.session = await ref.adapter.exportSession(ref.sessionId);
+            runtime.checkpoint = await ref.sandbox.checkpoint("engine-event");
+            await mutateRun({
+                runId: run.id,
+                claim: ctx.ownership,
+                runtime: toJsonInput(runtime),
+                event: {
+                    type: "run.engine.output",
+                    data: {
+                        kind: event.type,
+                        sessionId: ref.sessionId,
+                        text: event.text,
+                        ...event.data,
+                    },
+                },
+            });
+            await ctx.deps.afterEvent?.({ runId: run.id, jobId, event });
+            await fresh(ctx, run.id);
+            await deliverMessages(ctx, run, runtime, ref);
+        }
+    } finally {
+        // Do not wait forever on return() from a provider that ignores abort.
+        if (ctx.signal.aborted) void iterator.return?.().catch(() => {});
+    }
+};
+
+const plan = async (
+    ctx: WorkerContext,
+    run: AgentRunRow,
+    runtime: RunRuntime,
+    ref: RunSessionRef,
+    replan: boolean,
+    jobId: string,
+) => {
+    if (ref.sandbox.state === "PAUSED") await ref.sandbox.resume();
+    if (replan) {
+        const task = await readTask(prisma, run.issueId);
+        runtime.planningContext = taskFingerprint(
+            task,
+            run.repository,
+            run.baseCommit,
+        );
+        await ref.adapter.sendInput(
+            ref.sessionId,
+            JSON.stringify({ task, baseCommit: run.baseCommit }),
+        );
+        await abortable(
+            ctx.signal,
+            ref.adapter.regeneratePlan(ref.sessionId, {
+                baseCommit: run.baseCommit ?? undefined,
+                reason: "task-or-plan-changed",
+            }),
+        );
+        delete runtime.completed;
+        delete runtime.validation;
+        delete runtime.review;
+        delete runtime.artifact;
+        delete runtime.ack;
+        runtime.engineValidationFailed = false;
+    }
+    await stream(ctx, run, runtime, ref, jobId);
+    const result = await abortable(
+        ctx.signal,
+        ref.adapter.pauseForApproval(ref.sessionId),
+    );
+    runtime.session = await ref.adapter.exportSession(ref.sessionId);
+    runtime.checkpoint = await ref.sandbox.checkpoint("awaiting-approval");
+    const context =
+        runtime.planningContext ?? (await currentTaskFingerprint(prisma, run));
+    run = await transitionRun({
+        runId: run.id,
+        expectedFrom: run.status,
+        to: "AWAITING_APPROVAL",
+        claim: ctx.ownership,
+        commit: {
+            planVersion: result.planVersion,
+            planContextHash: context,
+            runtime: toJsonInput(runtime),
+        },
+        extraEvents: [
+            {
+                type: "run.plan.updated",
+                data: {
+                    planVersion: result.planVersion,
+                    plan: result.plan,
+                    baseCommit: run.baseCommit,
+                    contextHash: context,
+                    reason: replan ? "stale-approval-regeneration" : "initial",
+                },
+            },
+            {
+                type: "run.approval.requested",
+                data: {
+                    planVersion: result.planVersion,
+                    baseCommit: run.baseCommit,
+                },
+            },
+        ],
     });
     await ref.sandbox.pause();
-    await emit(updated, "run.sandbox.lifecycle", {
+    await emit(ctx, run, "run.sandbox.lifecycle", {
         phase: "paused-awaiting-approval",
-        checkpointId: pause.checkpointId,
     });
     return "awaiting-approval";
 };
 
-const freshFlow = async (
-    ctx: WorkerContext,
-    run: AgentRunRow,
-    jobId: string,
-    claim: JobClaim
-): Promise<string> => {
-    try {
-        // Fail fast and HONESTLY when the requested engine has no adapter:
-        // nothing is ever substituted. This happens before any state moves.
-        ctx.deps.registry.require(run.engine);
-    } catch (error) {
-        if (error instanceof EngineError && error.code === "UNSUPPORTED_CAPABILITY") {
-            await emit(run, "run.error", {
-                code: "UNSUPPORTED_CAPABILITY",
-                engine: run.engine,
-                detail: error.message,
-                substituted: false,
-            });
-            await failRun({
-                runId: run.id,
-                expectedFrom: run.status,
-                claim: ctx.ownership,
-                error: `engine '${run.engine}' unavailable: ${error.message}`,
-            });
-            return "failed-unsupported-engine";
-        }
-        throw error;
-    }
-
-    // THE FINALIZE STEP. QUEUED -> PROVISIONING and the durable first-attempt
-    // stamp go in ONE statement: `status != QUEUED && attemptedAt == null` can
-    // therefore only ever mean "the claim died before it durably recorded its
-    // start", which is exactly the state CP-D resumes from instead of replaying.
-    let current = await transition(
-        ctx,
-        run,
-        "PROVISIONING",
-        { stage: "provision" },
-        { attemptedAt: new Date() }
-    );
-    const { sandbox, recreated } = await ensureSandbox(ctx, current);
-    await emit(current, "run.sandbox.lifecycle", {
-        phase: recreated ? "recreated" : "provisioned",
-        repository: current.repository,
-        baseCommit: sandbox.baseCommit,
+export const cleanupRun = async (ctx: WorkerContext, run: AgentRunRow) => {
+    const runtime = readRuntime(run);
+    if (runtime.cleaned) return "cleaned";
+    const cached = ctx.sessions.get(run.id);
+    await prisma.$transaction(async (tx) => {
+        const owned = await assertRunOwnership(tx, run.id, ctx.ownership);
+        if (!isTerminalRunStatus(owned.status))
+            throw new RunError(
+                "ILLEGAL_TRANSITION",
+                "Cleanup requires a finished run",
+            );
     });
-
-    const ref = await startSession(ctx, current, sandbox);
-    const mode = current.executionMode;
-
-    if (mode === "PLAN_AND_APPROVE") {
-        current = await transition(ctx, current, "PLANNING", { stage: "plan" });
-        const streamed = await streamSession(ctx, current, jobId, ref);
-        if (streamed.cancelled) return streamedOutcome(streamed);
-        return pauseForApproval(ctx, current, ref, "initial");
-    }
-
-    current = await transition(ctx, current, "IMPLEMENTING", { stage: "implement" });
-    const streamed = await streamSession(ctx, current, jobId, ref);
-    if (streamed.cancelled) return streamedOutcome(streamed);
-    return publishTail(ctx, current, claim, ref);
+    if (cached) void cached.adapter.cancel(cached.sessionId).catch(() => {});
+    // Cleanup must never reconnect-or-recreate: absence is already clean.
+    await ctx.deps.sandboxes.destroy(run.id);
+    runtime.cleaned = true;
+    await mutateRun({
+        runId: run.id,
+        claim: ctx.ownership,
+        runtime: toJsonInput(runtime),
+        event: { type: "run.cleanup.completed", data: {} },
+    });
+    ctx.sessions.delete(run.id);
+    return "cleaned";
 };
 
-const streamedOutcome = (streamed: { reason: string; runStatus?: string }): string =>
-    streamed.runStatus
-        ? `cancelled-observed:${streamed.runStatus}`
-        : `aborted-engine:${streamed.reason}`;
-
-const resumeApprovedFlow = async (
+const publish = async (
     ctx: WorkerContext,
     run: AgentRunRow,
-    jobId: string,
-    claim: JobClaim,
-    approved: { planVersion: number; baseCommit: string }
-): Promise<string> => {
-    const ref = ctx.sessions.get(run.id);
-    if (!ref) return "ignored-no-resumable-session";
-
-    // The run ROW is the source of truth: if the plan version or base commit
-    // moved after the approval was recorded, resume is refused BEFORE any
-    // engine work and the plan is regenerated for re-approval.
-    const currentRun = await getRunById(run.id);
-    if (!currentRun) return "ignored-missing-run";
-    const rowPlanVersion = currentRun.planVersion as number;
-    const rowBaseCommit = String(currentRun.baseCommit ?? "");
+    runtime: RunRuntime,
+) => {
     if (
-        approved.planVersion !== rowPlanVersion ||
-        approved.baseCommit !== rowBaseCommit
-    ) {
-        return staleReplanFlow(ctx, currentRun, jobId, {
-            reason: "run-row-moved-since-approval",
-            approvedPlanVersion: approved.planVersion,
-            approvedBaseCommit: approved.baseCommit,
-            currentPlanVersion: rowPlanVersion,
-            currentBaseCommit: rowBaseCommit,
+        !runtime.completed ||
+        !runtime.artifact ||
+        !runtime.validation?.ok ||
+        !runtime.review?.ok
+    )
+        throw new RunError(
+            "INVALID_INPUT",
+            "Publication requires artifact, completion, validation and review evidence",
+        );
+    assertPublicationArtifact(run, runtime);
+    const authorize = async () => {
+        await prisma.$transaction(async (tx) => {
+            const locked = await assertRunOwnership(tx, run.id, ctx.ownership);
+            if (locked.status !== "PUBLISHING")
+                throw new RunError(
+                    "TERMINAL_STATE",
+                    "Publication no longer authorized",
+                );
         });
-    }
-
-    // connectOrRecreate resumes the PAUSED machine (or recreates it from the
-    // last checkpoint if lost) BEFORE the engine writes anything.
-    const { sandbox, recreated } = await ensureSandbox(ctx, currentRun);
-    ref.sandbox = sandbox;
-    await emit(currentRun, "run.sandbox.lifecycle", {
-        phase: recreated ? "recreated" : "reconnected",
-        resumedFor: `plan-v${approved.planVersion}`,
+    };
+    await authorize();
+    const ack = await abortable(
+        ctx.signal,
+        ctx.deps.publisher.publish({
+            run,
+            artifact: runtime.artifact,
+            headCommit: runtime.completed.headCommit,
+            authorize,
+            signal: ctx.signal,
+        }),
+    );
+    if (!ack) return "awaiting-publication";
+    if (
+        ack.branch !== run.branchName ||
+        ack.headCommit !== runtime.completed.headCommit
+    )
+        throw new RunError(
+            "INVALID_INPUT",
+            "Publisher acknowledgement does not match intent",
+        );
+    runtime.ack = ack;
+    run = await transitionRun({
+        runId: run.id,
+        expectedFrom: "PUBLISHING",
+        to: "COMPLETED",
+        claim: ctx.ownership,
+        commit: { runtime: toJsonInput(runtime) },
+        extraEvents: [{ type: "run.publication.acknowledged", data: ack }],
+        steps: [
+            async (tx) => {
+                await ctx.deps.store.enqueue(
+                    {
+                        type: "agent.run.cleanup",
+                        runId: run.id,
+                        idempotencyKey: `run:${run.id}:cleanup`,
+                    },
+                    tx,
+                );
+            },
+        ],
     });
-
-    try {
-        await ref.adapter.resume(ref.sessionId, {
-            approvedPlanVersion: approved.planVersion,
-            approvedBaseCommit: approved.baseCommit,
-        });
-    } catch (error) {
-        if (error instanceof EngineError && error.code === "STALE_APPROVAL") {
-            return staleReplanFlow(ctx, currentRun, jobId, error.details);
-        }
-        throw error;
-    }
-
-    const streamed = await streamSession(ctx, currentRun, jobId, ref);
-    if (streamed.cancelled) return streamedOutcome(streamed);
-    return publishTail(ctx, currentRun, claim, ref);
-};
-
-/** Approval raced with a base-commit/plan change: NOTHING is implemented.
- *  Record the durable error, step back to PLANNING, regenerate the plan
- *  against the CURRENT base and request approval again. */
-const staleReplanFlow = async (
-    ctx: WorkerContext,
-    run: AgentRunRow,
-    jobId: string,
-    details: Record<string, unknown>
-): Promise<string> => {
-    const ref = ctx.sessions.get(run.id);
-    if (!ref) return "ignored-no-resumable-session";
-
-    await emit(run, "run.error", {
-        code: "STALE_APPROVAL",
-        action: "plan-regeneration-required",
-        ...details,
-    });
-    let current = await transition(ctx, run, "AWAITING_APPROVAL", {
-        stage: "approval-stale",
-        reason: "base-commit-or-plan-changed-since-approval",
-    });
-    current = await transition(ctx, current, "PLANNING", { stage: "re-plan" });
-
-    const { sandbox } = await ensureSandbox(ctx, current);
-    ref.sandbox = sandbox;
-
-    await ref.adapter.regeneratePlan(ref.sessionId, {
-        baseCommit: current.baseCommit ?? undefined,
-        reason: "stale-approval-at-claim",
-    });
-    const streamed = await streamSession(ctx, current, jobId, ref);
-    if (streamed.cancelled) return streamedOutcome(streamed);
-    await pauseForApproval(ctx, current, ref, "stale-approval-regeneration");
-    return "stale-replan-awaiting-approval";
-};
-
-/** REJECTED approval (or manual replan): regenerate, re-request approval. */
-const replanFlow = async (
-    ctx: WorkerContext,
-    run: AgentRunRow,
-    jobId: string,
-    reason: string
-): Promise<string> => {
-    const ref = ctx.sessions.get(run.id);
-    if (!ref) return "ignored-no-resumable-session";
-    const { sandbox } = await ensureSandbox(ctx, run);
-    ref.sandbox = sandbox;
-    await ref.adapter.regeneratePlan(ref.sessionId, { reason });
-    const streamed = await streamSession(ctx, run, jobId, ref);
-    if (streamed.cancelled) return streamedOutcome(streamed);
-    // run.status is already PLANNING here (approval REJECTED moved it) — the
-    // pause transition PLANNING -> AWAITING_APPROVAL is legal.
-    return pauseForApproval(ctx, run, ref, reason);
+    await cleanupRun(ctx, run);
+    return "completed";
 };
 
 export const dispatchExecute = async (
     ctx: WorkerContext,
-    run: AgentRunRow,
+    initial: AgentRunRow,
     job: JobRecord,
-    claim: JobClaim
+    _claim: JobClaim,
 ): Promise<string> => {
-    const payload = (job.payload ?? {}) as Record<string, unknown>;
-    const reason = String(payload.reason ?? "created");
-    switch (reason) {
-        case "created":
-            if (run.status !== "QUEUED") return `ignored-status-for-created:${run.status}`;
-            return freshFlow(ctx, run, job.id, claim);
-        case "approved":
-            if (run.status !== "IMPLEMENTING") return `ignored-status-for-approved:${run.status}`;
-            return resumeApprovedFlow(ctx, run, job.id, claim, {
-                planVersion: Number(payload.planVersion ?? run.planVersion),
-                baseCommit: String(payload.baseCommit ?? run.baseCommit ?? ""),
-            });
-        case "replan-requested":
-            if (run.status !== "PLANNING") return `ignored-status-for-replan:${run.status}`;
-            return replanFlow(ctx, run, job.id, "approval-rejected");
-        case "manual-resume":
-            switch (run.status) {
-                case "QUEUED":
-                    return freshFlow(ctx, run, job.id, claim);
-                case "PLANNING":
-                    return replanFlow(ctx, run, job.id, "manual-resume");
-                case "IMPLEMENTING":
-                    // Manual resume continues against the CURRENT truth on the
-                    // run row, not a (possibly stale) queued payload.
-                    return resumeApprovedFlow(ctx, run, job.id, claim, {
+    let run = initial;
+    let runtime = readRuntime(run);
+    if (run.status === "BLOCKED" || run.status === "LIMIT_REACHED")
+        return "paused";
+    if (run.status === "AWAITING_APPROVAL") return "awaiting-approval";
+    if (run.status === "PUBLISHING") return publish(ctx, run, runtime);
+    if (run.status === "QUEUED") ctx.deps.registry.require(run.engine);
+    if (run.status === "QUEUED")
+        run = await transitionRun({
+            runId: run.id,
+            expectedFrom: "QUEUED",
+            to: "PROVISIONING",
+            claim: ctx.ownership,
+            commit: { attemptedAt: new Date() },
+        });
+    const ref = await ensureSession(ctx, run, runtime);
+    run = await fresh(ctx, run.id);
+    if (run.status === "PROVISIONING")
+        run = await move(
+            ctx,
+            run,
+            run.executionMode === "PLAN_AND_APPROVE"
+                ? "PLANNING"
+                : "IMPLEMENTING",
+            runtime,
+        );
+    if (run.status === "PLANNING")
+        return plan(
+            ctx,
+            run,
+            runtime,
+            ref,
+            runtime.session?.phase === "awaiting_approval" ||
+                job.payload.reason === "replan-requested",
+            job.id,
+        );
+    if (run.status === "IMPLEMENTING") {
+        if (run.executionMode === "PLAN_AND_APPROVE") {
+            const approval = await prisma.runApproval.findUnique({
+                where: {
+                    runId_planVersion: {
+                        runId: run.id,
                         planVersion: run.planVersion,
-                        baseCommit: String(run.baseCommit ?? ""),
-                    });
-                case "AWAITING_APPROVAL":
-                    return "coalesced-awaiting-approval";
-                default:
-                    return `ignored-status-for-resume:${run.status}`;
+                    },
+                },
+            });
+            if (
+                !approval ||
+                approval.decision !== "APPROVED" ||
+                !run.planContextHash ||
+                approval.contextHash !==
+                    (await currentTaskFingerprint(prisma, run)) ||
+                approval.baseCommit !== run.baseCommit
+            ) {
+                await emit(ctx, run, "run.error", {
+                    code: "STALE_APPROVAL",
+                    approvedBaseCommit: approval?.baseCommit,
+                    currentBaseCommit: run.baseCommit,
+                });
+                run = await move(ctx, run, "PLANNING");
+                await plan(ctx, run, runtime, ref, true, job.id);
+                return "stale-replan-awaiting-approval";
             }
-        default:
-            return `ignored-unhandled-reason:${reason}`;
+            if (runtime.session?.phase === "awaiting_approval") {
+                if (ref.sandbox.state === "PAUSED") await ref.sandbox.resume();
+                await emit(ctx, run, "run.sandbox.lifecycle", {
+                    phase: "reconnected",
+                    sessionId: ref.sessionId,
+                });
+                await abortable(
+                    ctx.signal,
+                    ref.adapter.resume(ref.sessionId, {
+                        approvedPlanVersion: run.planVersion,
+                        approvedBaseCommit: run.baseCommit ?? "",
+                    }),
+                );
+                await snapshot(ctx, run, runtime, ref);
+            }
+        }
+        if (!runtime.completed) await stream(ctx, run, runtime, ref, job.id);
+        if (!runtime.completed || runtime.engineValidationFailed)
+            throw new RunError(
+                "INVALID_INPUT",
+                "Engine output missing completion or reports failed validation",
+            );
+        run = await move(ctx, await fresh(ctx, run.id), "VALIDATING", runtime);
     }
+    if (run.status === "VALIDATING") {
+        runtime.validation = await abortable(
+            ctx.signal,
+            ctx.deps.checks.validate(ref.sandbox, ctx.signal),
+        );
+        if (!runtime.validation.ok) {
+            await saveRuntime(run.id, runtime, ctx.ownership);
+            throw new RunError(
+                "INVALID_INPUT",
+                "Independent validation failed",
+            );
+        }
+        runtime.artifact = await ref.sandbox.checkpoint("publication-artifact");
+        assertPublicationArtifact(run, runtime);
+        run = await move(ctx, run, "REVIEWING", runtime);
+    }
+    if (run.status === "REVIEWING") {
+        if (!runtime.artifact || !runtime.validation?.ok || !runtime.completed)
+            throw new RunError(
+                "INVALID_INPUT",
+                "Review requires verified artifact",
+            );
+        runtime.review = await abortable(
+            ctx.signal,
+            ctx.deps.checks.review(ref.sandbox, runtime.artifact, ctx.signal),
+        );
+        if (!runtime.review.ok) {
+            await saveRuntime(run.id, runtime, ctx.ownership);
+            throw new RunError(
+                "INVALID_INPUT",
+                "Independent review rejected changes",
+            );
+        }
+        run = await move(ctx, run, "PUBLISHING", runtime, [
+            {
+                type: "run.publication.intent",
+                data: {
+                    kind: "INTENT",
+                    branch: run.branchName,
+                    baseCommit: runtime.completed?.baseCommit ?? run.baseCommit,
+                    headCommit: runtime.completed.headCommit,
+                    changedFiles: runtime.completed.changedFiles,
+                    githubContacted: false,
+                    publication: "intent-only",
+                    artifactId: runtime.artifact.id,
+                },
+            },
+        ]);
+    }
+    return publish(ctx, run, runtime);
 };
 
 export const dispatchMessage = async (
     ctx: WorkerContext,
     run: AgentRunRow,
-    job: JobRecord
-): Promise<string> => {
-    const payload = (job.payload ?? {}) as Record<string, unknown>;
-    const ref = ctx.sessions.get(run.id);
-    let delivered = false;
-    if (ref) {
-        try {
-            await ref.adapter.sendInput(ref.sessionId, String(payload.text ?? ""));
-            delivered = true;
-        } catch {
-            delivered = false;
-        }
+    job: JobRecord,
+) => {
+    const runtime = readRuntime(run);
+    const ref = await ensureSession(ctx, run, runtime);
+    await deliverMessages(ctx, run, runtime, ref);
+    const id = String(
+        job.payload.messageId ?? `event:${job.payload.eventSequence}`,
+    );
+    if (!runtime.deliveredInputs.includes(id)) {
+        await ref.adapter.sendInput(
+            ref.sessionId,
+            String(job.payload.text ?? ""),
+            id,
+        );
+        runtime.deliveredInputs.push(id);
+        await snapshot(ctx, run, runtime, ref);
+        await emit(ctx, run, "run.engine.output", {
+            kind: "message-delivery",
+            eventSequence: job.payload.eventSequence ?? null,
+            text: job.payload.text,
+            delivered: true,
+            sessionId: ref.sessionId,
+        });
     }
-    await emit(run, "run.engine.output", {
-        kind: "message-delivery",
-        eventSequence: payload.eventSequence ?? null,
-        text: payload.text ?? "",
-        delivered,
-        sessionId: ref?.sessionId ?? null,
-    });
-    return delivered ? "message-delivered" : "message-not-delivered";
+    if (run.status === "AWAITING_APPROVAL" && ref.sandbox.state === "RUNNING")
+        await ref.sandbox.pause();
+    return "message-delivered";
 };

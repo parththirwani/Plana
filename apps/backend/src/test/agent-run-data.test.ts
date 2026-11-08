@@ -1,3 +1,4 @@
+process.env.AGENT_EXECUTION_MODE = "fake";
 import { describe, test, expect, beforeEach } from "bun:test";
 import { prismaMock } from "../test-utils/prismaMock";
 import type {
@@ -15,7 +16,7 @@ const prisma = prismaMock.prisma;
 const makeUser = (
     id: string,
     email: string,
-    overrides: Partial<MockUser> = {}
+    overrides: Partial<MockUser> = {},
 ): MockUser => ({
     id,
     email,
@@ -38,28 +39,29 @@ const makeMembership = (
     id: string,
     userId: string,
     organizationId: string,
-    role: string
+    role: string,
 ): MockMembership => ({ id, userId, organizationId, role });
 
 const makeBoard = (
     id: string,
     title: string,
     organizationId = "org_1",
-    defaultRepository: string | null = null
-): MockBoard => ({ id, title, description: null, organizationId, defaultRepository });
+    defaultRepository: string | null = null,
+): MockBoard => ({ id, title, description: null, organizationId, defaultRepository,
+});
 
 const makeSection = (
     id: string,
     title: string,
     order: number,
-    boardId = "brd_1"
+    boardId = "brd_1",
 ): MockSection => ({ id, title, order, boardId });
 
 const makeIssue = (
     id: string,
     title: string,
     sectionId: string,
-    order: number
+    order: number,
 ): MockIssue => ({
     id,
     title,
@@ -195,7 +197,7 @@ describe("agent run data layer (CP1)", () => {
                     type: "duplicate",
                     data: {},
                 },
-            })
+            }),
         );
 
         const otherRun = await prisma.agentRun.create({
@@ -206,7 +208,8 @@ describe("agent run data layer (CP1)", () => {
             }),
         });
         await prisma.runEvent.create({
-            data: { runId: otherRun.id, sequence: 1, type: "run.queued", data: {} },
+            data: { runId: otherRun.id, sequence: 1, type: "run.queued", data: {},
+            },
         });
         const runOneEvents = await prisma.runEvent.findMany({
             where: { runId: run.id },
@@ -219,7 +222,7 @@ describe("agent run data layer (CP1)", () => {
         await expectP2002(
             prisma.agentRun.create({
                 data: runData({ idempotencyKey: "key-2" }),
-            })
+            }),
         );
 
         const first = await prisma.agentRun.findFirst({
@@ -261,7 +264,9 @@ describe("agent run data layer (CP1)", () => {
         expect(otherOrg.organizationId).toBe("org_2");
 
         const byKey = await prisma.agentRun.findUnique({
-            where: { organizationId_idempotencyKey: { organizationId: "org_1", idempotencyKey: "key-1" } },
+            where: { organizationId_idempotencyKey: { organizationId: "org_1", idempotencyKey: "key-1",
+                },
+            },
         });
         expect(byKey?.organizationId).toBe("org_1");
     });
@@ -291,7 +296,7 @@ describe("agent run data layer (CP1)", () => {
                     baseCommit: "def456",
                     decidedBy: "alice",
                 },
-            })
+            }),
         );
 
         const found = await prisma.runApproval.findUnique({
@@ -325,7 +330,8 @@ describe("agent run data layer (CP1)", () => {
                 defaultExecutionMode: "PLAN_AND_APPROVE",
             },
         });
-        expect(created.allowedRepositories).toEqual(["acme/webapp", "acme/api"]);
+        expect(created.allowedRepositories).toEqual(["acme/webapp", "acme/api",
+        ]);
         expect(created.defaultEngine).toBe("OPENCODE");
         expect(created.defaultExecutionMode).toBe("PLAN_AND_APPROVE");
         expect(created.runBudgetUsd).toBe(5);
@@ -334,7 +340,7 @@ describe("agent run data layer (CP1)", () => {
         await expectP2002(
             prisma.organizationAgentConfig.create({
                 data: { organizationId: "org_1", allowedRepositories: [] },
-            })
+            }),
         );
 
         const upserted = await prisma.organizationAgentConfig.upsert({
@@ -344,7 +350,8 @@ describe("agent run data layer (CP1)", () => {
         });
         expect(upserted.defaultEngine).toBe("PI");
         expect(upserted.runBudgetUsd).toBe(9.5);
-        expect(upserted.allowedRepositories).toEqual(["acme/webapp", "acme/api"]);
+        expect(upserted.allowedRepositories).toEqual(["acme/webapp", "acme/api",
+        ]);
     });
 
     test("boards carry a default repository and issues an optional override", async () => {
@@ -355,7 +362,8 @@ describe("agent run data layer (CP1)", () => {
             where: { id: "brd_1" },
             data: { defaultRepository: "acme/webapp-v2" },
         });
-        const updated = await prisma.board.findUnique({ where: { id: "brd_1" } });
+        const updated = await prisma.board.findUnique({ where: { id: "brd_1" },
+        });
         expect(updated?.defaultRepository).toBe("acme/webapp-v2");
 
         const issue = await prisma.issue.create({
@@ -394,7 +402,8 @@ describe("agent run data layer (CP1)", () => {
         expect(await prisma.runApproval.count({ where: {} })).toBe(0);
 
         const orgRun = await prisma.agentRun.create({
-            data: runData({ organizationId: "org_2", issueId: "iss_x", activeIssueId: null }),
+            data: runData({ organizationId: "org_2", issueId: "iss_x", activeIssueId: null,
+            }),
         });
         await prisma.organizationAgentConfig.create({
             data: { organizationId: "org_2", allowedRepositories: [] },
@@ -406,7 +415,7 @@ describe("agent run data layer (CP1)", () => {
         expect(
             await prisma.organizationAgentConfig.findUnique({
                 where: { organizationId: "org_2" },
-            })
+            }),
         ).toBeNull();
     });
 });

@@ -18,6 +18,9 @@ export type MockAgentRun = {
     /// Optional so pre-existing seeds keep compiling — the fake defaults it to
     /// null, which is exactly what the column means for a never-started run.
     attemptedAt?: string | null;
+    taskSnapshot?: any;
+    runtime?: any;
+    planContextHash?: string | null;
     planVersion: number;
     owner: string | null;
     leaseExpiresAt: Date | string | null;
@@ -42,6 +45,7 @@ export type MockRunApproval = {
     planVersion: number;
     decision: string;
     baseCommit: string;
+    contextHash?: string;
     decidedBy: string;
     decidedAt: string;
 };
@@ -179,7 +183,8 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
         leaseRenewals: leaseRenewals.map((r) => ({ ...r })),
     });
 
-    const restoreAgentState = (state: ReturnType<typeof snapshotAgentState>) => {
+    const restoreAgentState = (state: ReturnType<typeof snapshotAgentState>,
+    ) => {
         agentRuns = state.agentRuns.map((r) => ({ ...r }));
         runEvents = state.runEvents.map((e) => ({ ...e }));
         runApprovals = state.runApprovals.map((a) => ({ ...a }));
@@ -226,7 +231,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
             agentRuns.some(
                 (r) =>
                     r.id !== excludeId &&
-                    r.activeIssueId === candidate.activeIssueId
+                    r.activeIssueId === candidate.activeIssueId,
             )
         ) {
             throw uniqueViolation("activeIssueId");
@@ -238,7 +243,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
                 (r) =>
                     r.id !== excludeId &&
                     r.organizationId === candidate.organizationId &&
-                    r.idempotencyKey === candidate.idempotencyKey
+                    r.idempotencyKey === candidate.idempotencyKey,
             )
         ) {
             throw uniqueViolation("organizationId, idempotencyKey");
@@ -266,7 +271,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
             if (where?.organizationId) {
                 return (
                     orgAgentConfigs.find(
-                        (c) => c.organizationId === where.organizationId
+                        (c) => c.organizationId === where.organizationId,
                     ) ?? null
                 );
             }
@@ -277,18 +282,18 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
                 (c) =>
                     (where?.organizationId === undefined ||
                         c.organizationId === where.organizationId) &&
-                    matchesWhere(c.defaultEngine, where?.defaultEngine)
+                    matchesWhere(c.defaultEngine, where?.defaultEngine),
             ) ?? null,
         findMany: async ({ where }: { where: any }) =>
             orgAgentConfigs.filter(
                 (c) =>
                     where?.organizationId === undefined ||
-                    c.organizationId === where.organizationId
+                    c.organizationId === where.organizationId,
             ),
         create: async ({ data }: { data: any }) => {
             if (
                 orgAgentConfigs.some(
-                    (c) => c.organizationId === data.organizationId
+                    (c) => c.organizationId === data.organizationId,
                 )
             ) {
                 throw uniqueViolation("organizationId");
@@ -314,7 +319,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
                 (c) =>
                     (where?.id !== undefined && c.id === where.id) ||
                     (where?.organizationId !== undefined &&
-                        c.organizationId === where.organizationId)
+                        c.organizationId === where.organizationId),
             )!;
             Object.assign(config, data, {
                 updatedAt: new Date().toISOString(),
@@ -334,7 +339,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
                 (c) =>
                     (where?.id !== undefined && c.id === where.id) ||
                     (where?.organizationId !== undefined &&
-                        c.organizationId === where.organizationId)
+                        c.organizationId === where.organizationId),
             );
             if (existing) {
                 Object.assign(existing, update, {
@@ -351,7 +356,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
                 (c) =>
                     (where?.id !== undefined && c.id === where.id) ||
                     (where?.organizationId !== undefined &&
-                        c.organizationId === where.organizationId)
+                        c.organizationId === where.organizationId),
             )!;
             orgAgentConfigs = orgAgentConfigs.filter(
                 (c) => c.id !== config.id
@@ -360,10 +365,10 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
         },
     };
 
-/** Resolve a Prisma numeric field update (`{ increment / decrement / set }`)
- *  against the value the row currently holds. Lease claims raise the fencing
- *  token with `increment`, which is only correct relative to that row. */
-const resolveNumericUpdate = (current: unknown, update: any): unknown => {
+    /** Resolve a Prisma numeric field update (`{ increment / decrement / set }`)
+     *  against the value the row currently holds. Lease claims raise the fencing
+     *  token with `increment`, which is only correct relative to that row. */
+    const resolveNumericUpdate = (current: unknown, update: any): unknown => {
     if (update !== null && typeof update === "object" && !Array.isArray(update)) {
         if ("increment" in update)
             return Number(current ?? 0) + Number(update.increment);
@@ -376,9 +381,9 @@ const resolveNumericUpdate = (current: unknown, update: any): unknown => {
     return update;
 };
 
-/** Column names whose stored form must be an ISO string, so `matchesWhere`
- *  compares like with like (the state machine writes ISO strings). */
-const ISO_COLUMNS = new Set(["leaseExpiresAt", "attemptedAt"]);
+    /** Column names whose stored form must be an ISO string, so `matchesWhere`
+     *  compares like with like (the state machine writes ISO strings). */
+    const ISO_COLUMNS = new Set(["leaseExpiresAt", "attemptedAt"]);
 
 const isoColumn = (key: string, value: unknown) =>
     ISO_COLUMNS.has(key) && value instanceof Date ? value.toISOString() : value;
@@ -390,12 +395,13 @@ const iso = (value: unknown): string | null =>
           ? value.toISOString()
           : String(value);
 
-const applyRunFields = (target: Record<string, any>, data: Record<string, any>) => {
+const applyRunFields = (target: Record<string, any>, data: Record<string, any>,
+    ) => {
     for (const [key, value] of Object.entries(data)) {
         target[key] = isoColumn(
             key,
-            resolveNumericUpdate(target[key], value)
-        );
+            resolveNumericUpdate(target[key], value),
+            );
     }
     return target;
 };
@@ -408,7 +414,7 @@ const agentRun = {
             if (where?.activeIssueId !== undefined) {
                 return (
                     agentRuns.find(
-                        (r) => r.activeIssueId === where.activeIssueId
+                        (r) => r.activeIssueId === where.activeIssueId,
                     ) ?? null
                 );
             }
@@ -418,7 +424,7 @@ const agentRun = {
                     agentRuns.find(
                         (r) =>
                             r.organizationId === compound.organizationId &&
-                            r.idempotencyKey === compound.idempotencyKey
+                            r.idempotencyKey === compound.idempotencyKey,
                     ) ?? null
                 );
             }
@@ -426,7 +432,8 @@ const agentRun = {
         },
         findUniqueOrThrow: async (args: { where: any }) => {
             const found = await agentRun.findUnique(args);
-            if (!found) throw new Error(`agentRun not found: ${JSON.stringify(args.where)}`);
+            if (!found) throw new Error(`agentRun not found: ${JSON.stringify(args.where)}`,
+                );
             return found;
         },
         findFirst: async ({ where }: { where: any }) =>
@@ -445,10 +452,10 @@ const agentRun = {
             applyPage(
                 applyOrderBy(
                     agentRuns.filter((r) => matchAgentRun(r, where)),
-                    orderBy
+                    orderBy,
                 ),
                 skip,
-                take
+                take,
             ),
         count: async ({ where }: { where: any }) =>
             agentRuns.filter((r) => matchAgentRun(r, where)).length,
@@ -471,6 +478,9 @@ const agentRun = {
                 activeIssueId: data.activeIssueId ?? null,
                 attemptedAt: data.attemptedAt ?? null,
                 planVersion: data.planVersion ?? 0,
+                taskSnapshot: data.taskSnapshot ?? {},
+                runtime: data.runtime ?? {},
+                planContextHash: data.planContextHash ?? null,
                 owner: data.owner ?? null,
                 leaseExpiresAt: data.leaseExpiresAt ?? null,
                 fencingToken: data.fencingToken ?? 0,
@@ -485,7 +495,8 @@ const agentRun = {
             const run = agentRuns.find((r) => matchAgentRun(r, where))!;
             const merged = { ...run, ...data };
             assertAgentRunUnique(merged, run.id);
-            applyRunFields(run, { ...data, updatedAt: new Date().toISOString() });
+            applyRunFields(run, { ...data, updatedAt: new Date().toISOString(),
+            });
             return { ...run };
         },
         /** CONDITIONAL write — the shape the run state machine's guard uses
@@ -502,7 +513,8 @@ const agentRun = {
                     updatedAt: new Date().toISOString(),
                 });
             }
-            return { count: matches.length, updated: matches.map((r) => ({ ...r })) };
+            return { count: matches.length, updated: matches.map((r) => ({ ...r })),
+            };
         },
         delete: async ({ where }: { where: any }) => {
             const run = agentRuns.find((r) => r.id === where.id)!;
@@ -530,10 +542,10 @@ const agentRun = {
             applyPage(
                 applyOrderBy(
                     runEvents.filter((e) => matchRunEvent(e, where)),
-                    orderBy ?? { sequence: "asc" }
+                    orderBy ?? { sequence: "asc" },
                 ),
                 skip,
-                take
+                take,
             ),
         count: async ({ where }: { where: any }) =>
             runEvents.filter((e) => matchRunEvent(e, where)).length,
@@ -542,7 +554,7 @@ const agentRun = {
                 runEvents.some(
                     (e) =>
                         e.runId === data.runId &&
-                        e.sequence === data.sequence
+                        e.sequence === data.sequence,
                 )
             ) {
                 throw uniqueViolation("runId, sequence");
@@ -573,7 +585,7 @@ const agentRun = {
             let count = 0;
             for (const row of rows) {
                 const clash = runEvents.some(
-                    (e) => e.runId === row.runId && e.sequence === row.sequence
+                    (e) => e.runId === row.runId && e.sequence === row.sequence,
                 );
                 if (clash) {
                     if (skipDuplicates) continue;
@@ -604,7 +616,7 @@ const agentRun = {
                     runApprovals.find(
                         (a) =>
                             a.runId === compound.runId &&
-                            a.planVersion === compound.planVersion
+                            a.planVersion === compound.planVersion,
                     ) ?? null
                 );
             }
@@ -614,14 +626,12 @@ const agentRun = {
             runApprovals.find((a) => matchRunApproval(a, where)) ?? null,
         findMany: async ({
             where,
-            orderBy,
-        }: {
+            orderBy }: {
             where: any;
-            orderBy?: any;
-        }) =>
+            orderBy?: any }) =>
             applyOrderBy(
                 runApprovals.filter((a) => matchRunApproval(a, where)),
-                orderBy
+                orderBy,
             ),
         count: async ({ where }: { where: any }) =>
             runApprovals.filter((a) => matchRunApproval(a, where)).length,
@@ -630,7 +640,7 @@ const agentRun = {
                 runApprovals.some(
                     (a) =>
                         a.runId === data.runId &&
-                        a.planVersion === data.planVersion
+                        a.planVersion === data.planVersion,
                 )
             ) {
                 throw uniqueViolation("runId, planVersion");
@@ -642,6 +652,7 @@ const agentRun = {
                 decision: data.decision,
                 baseCommit: data.baseCommit,
                 decidedBy: data.decidedBy,
+                contextHash: data.contextHash ?? "",
                 decidedAt: new Date().toISOString(),
             };
             runApprovals.push(approval);
@@ -676,7 +687,7 @@ const agentRun = {
             agentJobs.some(
                 (j) =>
                     j.id !== excludeId &&
-                    j.idempotencyKey === candidate.idempotencyKey
+                    j.idempotencyKey === candidate.idempotencyKey,
             )
         ) {
             throw uniqueViolation("idempotencyKey");
@@ -691,7 +702,7 @@ const agentRun = {
             if (where?.idempotencyKey !== undefined) {
                 return (
                     agentJobs.find(
-                        (j) => j.idempotencyKey === where.idempotencyKey
+                        (j) => j.idempotencyKey === where.idempotencyKey,
                     ) ?? null
                 );
             }
@@ -713,10 +724,10 @@ const agentRun = {
             applyPage(
                 applyOrderBy(
                     agentJobs.filter((j) => matchAgentJob(j, where)),
-                    orderBy
+                    orderBy,
                 ),
                 skip,
-                take
+                take,
             ),
         count: async ({ where }: { where: any }) =>
             agentJobs.filter((j) => matchAgentJob(j, where)).length,
@@ -781,11 +792,11 @@ const agentRun = {
             leaseRenewals.filter(
                 (r) =>
                     (where?.runId === undefined || r.runId === where.runId) &&
-                    (where?.machineId === undefined || r.machineId === where.machineId)
+                    (where?.machineId === undefined || r.machineId === where.machineId),
             ),
         count: async ({ where }: { where?: any } = {}) =>
             leaseRenewals.filter(
-                (r) => where?.runId === undefined || r.runId === where.runId
+                (r) => where?.runId === undefined || r.runId === where.runId,
             ).length,
     };
 
@@ -802,12 +813,14 @@ const agentRun = {
          *  mock cannot block, but it can hand back the identical projection, so
          *  the state machine's lock path runs the same code here as against a
          *  live Postgres. */
+        lockedJobRows: (id: string) =>
+            agentJobs.filter((j) => j.id === id).map((j) => ({ ...j })),
         lockedRunRows: (issueId?: string, runId?: string) =>
             agentRuns
                 .filter(
                     (r) =>
                         (issueId === undefined || r.activeIssueId === issueId) &&
-                        (runId === undefined || r.id === runId)
+                        (runId === undefined || r.id === runId),
                 )
                 .map((r) => ({ ...r })),
         allRows: () => [
@@ -833,7 +846,7 @@ const agentRun = {
             agentRuns = agentRuns.filter((r) => r.issueId !== issueId);
             runEvents = runEvents.filter((e) => !runIds.includes(e.runId));
             runApprovals = runApprovals.filter((a) =>
-                !runIds.includes(a.runId)
+                !runIds.includes(a.runId),
             );
             agentJobs = agentJobs.filter((j) => !runIds.includes(j.runId!));
         },
@@ -842,15 +855,15 @@ const agentRun = {
                 .filter((r) => r.organizationId === organizationId)
                 .map((r) => r.id);
             agentRuns = agentRuns.filter(
-                (r) => r.organizationId !== organizationId
+                (r) => r.organizationId !== organizationId,
             );
             runEvents = runEvents.filter((e) => !runIds.includes(e.runId));
             runApprovals = runApprovals.filter((a) =>
-                !runIds.includes(a.runId)
+                !runIds.includes(a.runId),
             );
             agentJobs = agentJobs.filter((j) => !runIds.includes(j.runId!));
             orgAgentConfigs = orgAgentConfigs.filter(
-                (c) => c.organizationId !== organizationId
+                (c) => c.organizationId !== organizationId,
             );
         },
     };

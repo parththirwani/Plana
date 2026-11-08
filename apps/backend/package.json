@@ -5,7 +5,11 @@
   "private": true,
   "scripts": {
     "dev": "bun --watch index.ts",
-    "smoke": "bun run scripts/smoke.ts"
+    "smoke": "bun run scripts/smoke.ts",
+    "agent:worker": "bun src/worker/main.ts",
+    "test": "bun test ./src/test/*.test.ts",
+    "test:agents:pg": "bun test src/test-integration/runStateMachine.pg.test.ts && bun test src/test-integration/runFoundation.pg.test.ts",
+    "check-types": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/bun": "latest",

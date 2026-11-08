@@ -34,7 +34,7 @@ import {
 // real provider integration stays in the UNVERIFIED ledger.
 
 type SessionPhase =
-    | "planning"
+    "planning"
     | "awaiting_approval"
     | "implementing"
     | "done"
@@ -62,6 +62,7 @@ type Session = {
     branchName: string | null;
     headCommit: string | null;
     changedFiles: string[];
+    deliveredInputs?: string[];
 };
 
 let sessionSeq = 0;
@@ -69,7 +70,7 @@ let sessionSeq = 0;
 const planTextFor = (
     runId: string,
     planVersion: number,
-    baseCommit: string
+    baseCommit: string,
 ): string =>
     [
         `Plan v${planVersion} for ${runId}`,
@@ -79,8 +80,10 @@ const planTextFor = (
         `- branch plana/${runId}, validated with 'bun test'`,
     ].join("\n");
 
-const implementChanges = (session: Session): { files: string[]; head: string } => {
-    const files = [`src/issue-${session.runId}.ts`, `tests/issue-${session.runId}.test.ts`];
+const implementChanges = (session: Session,
+): { files: string[]; head: string } => {
+    const files = [`src/issue-${session.runId}.ts`, `tests/issue-${session.runId}.test.ts`,
+    ];
     return { files, head: `head-of-${session.baseCommit}` };
 };
 
@@ -105,12 +108,14 @@ export class FakeEngineAdapter implements EngineAdapter {
             throw new EngineError("SESSION_NOT_FOUND", `unknown engine session ${sessionId}`, {
                 sessionId,
                 engine: this.engineId,
-            });
+            },
+            );
         }
         return session;
     }
 
-    private rejectUnsupported(field: string, requested: unknown, reason: string, available?: string[]) {
+    private rejectUnsupported(field: string, requested: unknown, reason: string, available?: string[],
+    ) {
         // The reason comes from the shared capability catalog; the request is
         // refused outright. Engine/model/options are NEVER substituted.
         throw new EngineError("UNSUPPORTED_CAPABILITY", reason, {
@@ -128,13 +133,15 @@ export class FakeEngineAdapter implements EngineAdapter {
             model: request.model,
             options: request.options,
             executionMode: request.executionMode,
-        });
+        },
+            true,
+        );
         if (!selection.ok) {
             this.rejectUnsupported(
                 selection.issue.field,
                 selection.issue.requested,
                 selection.issue.reason,
-                selection.issue.available
+                selection.issue.available,
             );
         }
 
@@ -165,12 +172,15 @@ export class FakeEngineAdapter implements EngineAdapter {
         // Read-only inspection first, in BOTH modes: the sandbox is never
         // written during planning for PLAN_AND_APPROVE.
         session.events.push(
-            { type: "status", text: `inspecting ${session.repository} @ ${session.baseCommit}` },
-            { type: "output", text: "read README.md, src/index.ts (read-only)" }
+            { type: "status", text: `inspecting ${session.repository} @ ${session.baseCommit}`,
+            },
+            { type: "output", text: "read README.md, src/index.ts (read-only)",
+            },
         );
 
         if (session.executionMode === "PLAN_AND_APPROVE") {
-            session.plan = planTextFor(session.runId, session.planVersion, session.baseCommit);
+            session.plan = planTextFor(session.runId, session.planVersion, session.baseCommit,
+            );
             session.events.push({
                 type: "plan",
                 text: session.plan,
@@ -205,7 +215,9 @@ export class FakeEngineAdapter implements EngineAdapter {
                 data: { path: file, baseCommit: session.baseCommit },
             });
         }
-        void session.sandbox.writeArtifact(`.plana/session-${session.runId}.md`, "progress notes\n");
+        void session.sandbox.writeArtifact(`.plana/session-${session.runId}.md`, "progress notes\n",
+        );
+        void session.sandbox.exec(`git commit --fake-head ${head}`);
         session.headCommit = head;
         session.events.push(
             { type: "validation", data: { command: "bun test", ok: true } },
@@ -218,7 +230,7 @@ export class FakeEngineAdapter implements EngineAdapter {
                     headCommit: head,
                     changedFiles: [...session.changedFiles],
                 },
-            }
+            },
         );
         session.phase = "implementing";
     }
@@ -226,19 +238,21 @@ export class FakeEngineAdapter implements EngineAdapter {
     async *#gen(sessionId: string): AsyncGenerator<EngineEvent> {
         const session = this.require(sessionId);
         if (session.phase === "cancelled") {
-            yield { type: "cancelled", data: { reason: "session cancelled before streaming" } };
+            yield { type: "cancelled", data: { reason: "session cancelled before streaming" },
+            };
             return;
         }
         if (session.phase !== "planning" && session.phase !== "implementing") {
             throw new EngineError(
                 "SESSION_NOT_RUNNING",
                 `session ${sessionId} is ${session.phase}; cannot stream events`,
-                { sessionId, phase: session.phase }
+                { sessionId, phase: session.phase },
             );
         }
         for (;;) {
             if (session.cancelCalls > 0) {
-                yield { type: "cancelled", data: { reason: "engine cancelled by worker" } };
+                yield { type: "cancelled", data: { reason: "engine cancelled by worker" },
+                };
                 return;
             }
             const event = session.events[session.streamStart];
@@ -247,7 +261,8 @@ export class FakeEngineAdapter implements EngineAdapter {
                     // IMPLEMENT streams to completion; PLAN streams end with
                     // the plan event and then idle until paused.
                     if (session.executionMode === "PLAN_AND_APPROVE") return;
-                    yield { type: "cancelled", data: { reason: "engine output ended unexpectedly" } };
+                    yield { type: "cancelled", data: { reason: "engine output ended unexpectedly" },
+                    };
                     return;
                 }
                 return;
@@ -278,14 +293,14 @@ export class FakeEngineAdapter implements EngineAdapter {
             throw new EngineError(
                 "SESSION_NOT_RUNNING",
                 `session ${sessionId} is ${session.phase}; nothing to pause`,
-                { sessionId, phase: session.phase }
+                { sessionId, phase: session.phase },
             );
         }
         if (session.executionMode !== "PLAN_AND_APPROVE") {
             throw new EngineError(
                 "SESSION_NOT_RUNNING",
                 `${session.executionMode} runs do not pause for approval`,
-                { sessionId }
+                { sessionId },
             );
         }
         // NO tracked file has been touched at this point — proven by the
@@ -301,19 +316,20 @@ export class FakeEngineAdapter implements EngineAdapter {
 
     async regeneratePlan(
         sessionId: string,
-        input: { baseCommit?: string; reason: string }
+        input: { baseCommit?: string; reason: string },
     ): Promise<{ planVersion: number; plan: string }> {
         const session = this.require(sessionId);
         if (session.phase === "cancelled") {
             throw new EngineError("SESSION_CANCELLED", `session ${sessionId} is cancelled`, {
                 sessionId,
-            });
+            },
+            );
         }
         if (session.executionMode !== "PLAN_AND_APPROVE") {
             throw new EngineError(
                 "SESSION_NOT_RUNNING",
                 `${session.executionMode} runs have no approval plan to regenerate`,
-                { sessionId }
+                { sessionId },
             );
         }
         if (input.baseCommit && input.baseCommit !== session.baseCommit) {
@@ -321,10 +337,12 @@ export class FakeEngineAdapter implements EngineAdapter {
         }
         session.planVersion += 1;
         session.phase = "planning";
-        session.plan = planTextFor(session.runId, session.planVersion, session.baseCommit);
+        session.plan = planTextFor(session.runId, session.planVersion, session.baseCommit,
+        );
         session.streamStart = session.events.length;
         session.events.push(
-            { type: "status", text: `re-inspecting against base ${session.baseCommit} (${input.reason})` },
+            { type: "status", text: `re-inspecting against base ${session.baseCommit} (${input.reason})`,
+            },
             {
                 type: "plan",
                 text: session.plan,
@@ -334,28 +352,28 @@ export class FakeEngineAdapter implements EngineAdapter {
                     mode: "PLAN_AND_APPROVE",
                     regeneratedBecause: input.reason,
                 },
-            }
+            },
         );
         return { planVersion: session.planVersion, plan: session.plan };
     }
 
     async resume(
         sessionId: string,
-        approved: EngineResumeInput
+        approved: EngineResumeInput,
     ): Promise<{ sessionId: string }> {
         const session = this.require(sessionId);
         if (session.phase === "cancelled") {
             throw new EngineError(
                 "SESSION_CANCELLED",
                 `session ${sessionId} was cancelled; a late approval result cannot revive it`,
-                { sessionId }
+                { sessionId },
             );
         }
         if (session.phase !== "awaiting_approval") {
             throw new EngineError(
                 "SESSION_NOT_RUNNING",
                 `session ${sessionId} is ${session.phase}; resume requires AWAITING_APPROVAL`,
-                { sessionId, phase: session.phase }
+                { sessionId, phase: session.phase },
             );
         }
         // EXACT-match gate: the approved plan version and base commit must
@@ -373,7 +391,7 @@ export class FakeEngineAdapter implements EngineAdapter {
                     currentPlanVersion: session.planVersion,
                     approvedBaseCommit: approved.approvedBaseCommit,
                     currentBaseCommit: session.baseCommit,
-                }
+                },
             );
         }
         session.resumeCalls += 1;
@@ -387,14 +405,21 @@ export class FakeEngineAdapter implements EngineAdapter {
         return { sessionId };
     }
 
-    async sendInput(sessionId: string, text: string): Promise<{ delivered: true }> {
+    async sendInput(sessionId: string, text: string,
+        messageId?: string,
+    ): Promise<{ delivered: true }> {
         const session = this.require(sessionId);
         if (session.phase === "cancelled") {
             throw new EngineError("SESSION_CANCELLED", `session ${sessionId} is cancelled`, {
                 sessionId,
-            });
+            },
+            );
         }
+        session.deliveredInputs ??= [];
+        if (messageId && session.deliveredInputs.includes(messageId))
+            return { delivered: true };
         session.inputs.push(text);
+        if (messageId) session.deliveredInputs.push(messageId);
         return { delivered: true };
     }
 
@@ -422,10 +447,44 @@ export class FakeEngineAdapter implements EngineAdapter {
             usage,
             // The fake has no credentials to begin with; the redaction list
             // records the sanitizer passes a real adapter must run here.
-            secretRedactions: usage.inputTokens + usage.outputTokens > 0
-                ? ["model-gateway-token", "git-checkout-token"]
-                : [],
+            state: {
+                options: session.options,
+                phase: session.phase,
+                plan: session.plan,
+                events: session.events,
+                streamStart: session.streamStart,
+                inputs: session.inputs,
+                cancelCalls: session.cancelCalls,
+                resumeCalls: session.resumeCalls,
+                startedAt: session.startedAt,
+                branchName: session.branchName,
+                headCommit: session.headCommit,
+                changedFiles: session.changedFiles,
+                deliveredInputs: session.deliveredInputs ?? [],
+            },
+            secretRedactions: [],
         };
+    }
+
+    async restoreSession(exported: EngineSessionExport, sandbox: Sandbox) {
+        if (exported.engine !== this.engineId || !exported.state)
+            throw new EngineError(
+                "SESSION_NOT_FOUND",
+                "Session export cannot be restored by this adapter",
+            );
+        this.sessions.set(exported.sessionId, {
+            id: exported.sessionId,
+            runId: exported.runId,
+            engineId: this.engineId,
+            model: exported.model,
+            executionMode: exported.executionMode,
+            repository: exported.repository,
+            baseCommit: exported.baseCommit,
+            planVersion: exported.planVersion,
+            sandbox,
+            ...structuredClone(exported.state),
+        });
+        return { sessionId: exported.sessionId };
     }
 
     async reportUsage(sessionId: string): Promise<EngineUsageReport> {
@@ -445,7 +504,8 @@ export class FakeEngineAdapter implements EngineAdapter {
             calls,
             inputTokens,
             outputTokens,
-            costUsd: Number(((inputTokens + outputTokens) * 0.000004).toFixed(6)),
+            costUsd: Number(((inputTokens + outputTokens) * 0.000004).toFixed(6),
+            ),
         };
     }
 

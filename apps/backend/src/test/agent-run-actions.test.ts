@@ -1,3 +1,4 @@
+process.env.AGENT_EXECUTION_MODE = "fake";
 import {
     describe,
     test,
@@ -93,22 +94,32 @@ const seedData = () =>
             makeUser("dave", "dave@example.com"), // other-org ADMIN
         ],
         organizations: [
-            { id: "org_1", name: "Acme", slug: "acme", description: null, orgImage: null } as MockOrg,
-            { id: "org_2", name: "Other", slug: "other", description: null, orgImage: null } as MockOrg,
+            { id: "org_1", name: "Acme", slug: "acme", description: null, orgImage: null,
+            } as MockOrg,
+            { id: "org_2", name: "Other", slug: "other", description: null, orgImage: null,
+            } as MockOrg,
         ],
         memberships: [
-            { id: "mem_1", userId: "alice", organizationId: "org_1", role: "ADMIN" } as MockMembership,
-            { id: "mem_2", userId: "bob", organizationId: "org_1", role: "MODERATOR" } as MockMembership,
-            { id: "mem_3", userId: "carol", organizationId: "org_1", role: "MEMBER" } as MockMembership,
-            { id: "mem_4", userId: "dave", organizationId: "org_2", role: "ADMIN" } as MockMembership,
+            { id: "mem_1", userId: "alice", organizationId: "org_1", role: "ADMIN",
+            } as MockMembership,
+            { id: "mem_2", userId: "bob", organizationId: "org_1", role: "MODERATOR",
+            } as MockMembership,
+            { id: "mem_3", userId: "carol", organizationId: "org_1", role: "MEMBER",
+            } as MockMembership,
+            { id: "mem_4", userId: "dave", organizationId: "org_2", role: "ADMIN",
+            } as MockMembership,
         ],
         boards: [
-            { id: "brd_1", title: "Board", description: null, organizationId: "org_1", defaultRepository: "acme/web" } as MockBoard,
-            { id: "brd_2", title: "Other", description: null, organizationId: "org_2", defaultRepository: "other/repo" } as MockBoard,
+            { id: "brd_1", title: "Board", description: null, organizationId: "org_1", defaultRepository: "acme/web",
+            } as MockBoard,
+            { id: "brd_2", title: "Other", description: null, organizationId: "org_2", defaultRepository: "other/repo",
+            } as MockBoard,
         ],
         sections: [
-            { id: "sec_1", title: "Todo", order: 0, boardId: "brd_1" } as MockSection,
-            { id: "sec_2", title: "Todo", order: 0, boardId: "brd_2" } as MockSection,
+            { id: "sec_1", title: "Todo", order: 0, boardId: "brd_1",
+            } as MockSection,
+            { id: "sec_2", title: "Todo", order: 0, boardId: "brd_2",
+            } as MockSection,
         ],
         issues: [
             makeIssue("iss_1"),
@@ -130,11 +141,12 @@ const body = (overrides: Record<string, unknown> = {}) => ({
     ...overrides,
 });
 
-const launch = async (issueId: string, overrides: Record<string, unknown> = {}) => {
+const launch = async (issueId: string, overrides: Record<string, unknown> = {},
+) => {
     const res = await http.post(
         `/api/v1/issues/${issueId}/agent-runs`,
         body(overrides),
-        tok("bob@example.com")
+        tok("bob@example.com"),
     );
     expect(res.status).toBe(201);
     return (await json(res)).run as any;
@@ -148,7 +160,19 @@ const launch = async (issueId: string, overrides: Record<string, unknown> = {}) 
 const advanceToAwaitingApproval = async (runId: string) => {
     await prisma.agentRun.update({
         where: { id: runId },
-        data: { status: "AWAITING_APPROVAL", planVersion: 2, baseCommit: "base-9" },
+        data: { status: "AWAITING_APPROVAL", planVersion: 2, baseCommit: "base-9",
+        },
+    });
+    const row = await prisma.agentRun.findUnique({ where: { id: runId } });
+    const { currentTaskFingerprint } = await import("../runs/taskContext");
+    await prisma.agentRun.update({
+        where: { id: runId },
+        data: {
+            planContextHash: await currentTaskFingerprint(
+                prisma as any,
+                row as any,
+            ),
+        },
     });
     return prisma.agentRun.findUnique({ where: { id: runId } }) as any;
 };
@@ -156,7 +180,7 @@ const advanceToAwaitingApproval = async (runId: string) => {
 const approveHttp = (
     runId: string,
     body_: Record<string, unknown>,
-    cookie: string | null
+    cookie: string | null,
 ) => http.post(`/api/v1/agent-runs/${runId}/approvals`, body_, cookie);
 
 const eventsFor = async (runId: string) =>
@@ -184,7 +208,7 @@ afterAll(() => {
 
 beforeEach(async () => {
     seedData();
-    jobStore = createMemoryJobStore();
+    jobStore = createMemoryJobStore(prismaMock.prisma as any);
     setJobStore(jobStore);
     setRunEventPublisher(async () => {});
     for (const email of [
@@ -205,7 +229,7 @@ describe("agent run API — plan approvals", () => {
         const res = await approveHttp(
             run.id,
             { planVersion: 2, decision: "APPROVED", baseCommit: "base-9" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(res.status).toBe(201);
         const body = await json(res);
@@ -224,7 +248,8 @@ describe("agent run API — plan approvals", () => {
         expect(events[2]!.data.to).toBe("IMPLEMENTING");
 
         const jobs = await jobStore.listByRun(run.id);
-        const execute = jobs.find((j) => j.idempotencyKey === `run:${run.id}:execute:v2`);
+        const execute = jobs.find((j) => j.idempotencyKey === `run:${run.id}:execute:v2`,
+        );
         expect(execute).toBeDefined();
         expect(execute!.status).toBe("QUEUED");
         expect(execute!.payload).toEqual({
@@ -238,14 +263,17 @@ describe("agent run API — plan approvals", () => {
     test("approval is idempotent: the same decision replays without new events or jobs", async () => {
         const run = await launch("iss_1");
         await advanceToAwaitingApproval(run.id);
-        const payload = { planVersion: 2, decision: "APPROVED", baseCommit: "base-9" };
+        const payload = { planVersion: 2, decision: "APPROVED", baseCommit: "base-9",
+        };
 
-        const first = await approveHttp(run.id, payload, tok("bob@example.com"));
+        const first = await approveHttp(run.id, payload, tok("bob@example.com"),
+        );
         expect(first.status).toBe(201);
         const approvalId = (await json(first)).approval.id;
         const eventsAfterFirst = await eventsFor(run.id);
 
-        const second = await approveHttp(run.id, payload, tok("bob@example.com"));
+        const second = await approveHttp(run.id, payload, tok("bob@example.com"),
+        );
         expect(second.status).toBe(200);
         const replay = await json(second);
         expect(replay.replayed).toBe(true);
@@ -254,10 +282,12 @@ describe("agent run API — plan approvals", () => {
 
         expect(await eventsFor(run.id)).toEqual(eventsAfterFirst);
         expect(
-            (await prisma.runApproval.findMany({ where: { runId: run.id } })) as any[]
+            (await prisma.runApproval.findMany({ where: { runId: run.id },
+            })) as any[],
         ).toHaveLength(1);
         const jobs = await jobStore.listByRun(run.id);
-        expect(jobs.filter((j) => j.idempotencyKey === `run:${run.id}:execute:v2`)).toHaveLength(1);
+        expect(jobs.filter((j) => j.idempotencyKey === `run:${run.id}:execute:v2`),
+        ).toHaveLength(1);
     });
 
     test("stale approvals are rejected: moved plan version, changed base commit, conflicting decision", async () => {
@@ -267,7 +297,7 @@ describe("agent run API — plan approvals", () => {
         const wrongVersion = await approveHttp(
             run.id,
             { planVersion: 1, decision: "APPROVED" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(wrongVersion.status).toBe(409);
         const staleVersion = await json(wrongVersion);
@@ -277,7 +307,7 @@ describe("agent run API — plan approvals", () => {
         const wrongBase = await approveHttp(
             run.id,
             { planVersion: 2, decision: "APPROVED", baseCommit: "old-base" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(wrongBase.status).toBe(409);
         const staleBase = await json(wrongBase);
@@ -292,7 +322,7 @@ describe("agent run API — plan approvals", () => {
         const nowStale = await approveHttp(
             run.id,
             { planVersion: 2, decision: "APPROVED", baseCommit: "base-9" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(nowStale.status).toBe(409);
         expect((await json(nowStale)).code).toBe("STALE_APPROVAL");
@@ -303,7 +333,7 @@ describe("agent run API — plan approvals", () => {
         const tooEarly = await approveHttp(
             queuedRun.id,
             { planVersion: 0, decision: "APPROVED" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(tooEarly.status).toBe(409);
         expect((await json(tooEarly)).code).toBe("ILLEGAL_TRANSITION");
@@ -313,12 +343,12 @@ describe("agent run API — plan approvals", () => {
         await approveHttp(
             run.id,
             { planVersion: 2, decision: "APPROVED", baseCommit: "base-9" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         const conflict = await approveHttp(
             run.id,
             { planVersion: 2, decision: "REJECTED" },
-            tok("alice@example.com")
+            tok("alice@example.com"),
         );
         expect(conflict.status).toBe(409);
         expect((await json(conflict)).code).toBe("STALE_APPROVAL");
@@ -326,16 +356,16 @@ describe("agent run API — plan approvals", () => {
         const cancelRes = await http.post(
             `/api/v1/agent-runs/${run.id}/cancel`,
             { reason: "done" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(cancelRes.status).toBe(200);
         const afterTerminal = await approveHttp(
             run.id,
             { planVersion: 2, decision: "REJECTED" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(afterTerminal.status).toBe(409);
-        expect((await json(afterTerminal)).code).toBe("TERMINAL_STATE");
+        expect((await json(afterTerminal)).code).toBe("STALE_APPROVAL");
     });
 
     test("rejection sends the run back to planning with a replan job", async () => {
@@ -345,7 +375,7 @@ describe("agent run API — plan approvals", () => {
         const res = await approveHttp(
             run.id,
             { planVersion: 2, decision: "REJECTED", baseCommit: "base-9" },
-            tok("alice@example.com")
+            tok("alice@example.com"),
         );
         expect(res.status).toBe(201);
         const body = await json(res);
@@ -353,7 +383,7 @@ describe("agent run API — plan approvals", () => {
 
         const jobs = await jobStore.listByRun(run.id);
         const replan = jobs.find(
-            (j) => j.idempotencyKey === `run:${run.id}:execute:v2:replan`
+            (j) => j.idempotencyKey === `run:${run.id}:execute:v2:replan`,
         );
         expect(replan).toBeDefined();
         expect(replan!.payload.reason).toBe("replan-requested");
@@ -369,7 +399,7 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         const res = await http.post(
             `/api/v1/agent-runs/${run.id}/cancel`,
             { reason: "not needed" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(res.status).toBe(200);
         const body = await json(res);
@@ -388,10 +418,10 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         const again = await http.post(
             `/api/v1/agent-runs/${run.id}/cancel`,
             {},
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
-        expect(again.status).toBe(409);
-        expect((await json(again)).code).toBe("TERMINAL_STATE");
+        expect(again.status).toBe(200);
+        expect((await json(again)).run.status).toBe("CANCELLED");
     });
 
     test("resume coalesces while durable work exists, re-enqueues once it is gone and refuses terminal runs", async () => {
@@ -400,7 +430,7 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         const coalesced = await http.post(
             `/api/v1/agent-runs/${run.id}/resume`,
             {},
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(coalesced.status).toBe(200);
         const cBody = await json(coalesced);
@@ -408,19 +438,20 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         expect(await jobStore.listByRun(run.id)).toHaveLength(1);
 
         // worker runs the job to completion; nothing active remains
-        const claimed = await jobStore.claimNext("worker-1", new Date().toISOString());
+        const claimed = await jobStore.claimNext("worker-1", new Date().toISOString(),
+        );
         expect(claimed).not.toBeNull();
         await jobStore.complete(
             claimed!.job.id,
             "worker-1",
             claimed!.fencingToken,
-            new Date().toISOString()
+            new Date().toISOString(),
         );
 
         const requeued = await http.post(
             `/api/v1/agent-runs/${run.id}/resume`,
             {},
-            tok("alice@example.com")
+            tok("alice@example.com"),
         );
         expect(requeued.status).toBe(200);
         const rBody = await json(requeued);
@@ -428,7 +459,7 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         const jobs = await jobStore.listByRun(run.id);
         expect(jobs).toHaveLength(2);
         expect(jobs[1]!.status).toBe("QUEUED");
-        expect(jobs[1]!.idempotencyKey).toBe(`run:${run.id}:resume`);
+        expect(jobs[1]!.idempotencyKey).toStartWith(`run:${run.id}:resume:`);
 
         const events = await eventsFor(run.id);
         expect(events[events.length - 1]!.type).toBe("run.message");
@@ -439,12 +470,12 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         await http.post(
             `/api/v1/agent-runs/${cancelled.id}/cancel`,
             {},
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         const revive = await http.post(
             `/api/v1/agent-runs/${cancelled.id}/resume`,
             {},
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(revive.status).toBe(409);
         expect((await json(revive)).code).toBe("TERMINAL_STATE");
@@ -455,7 +486,7 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         const res = await http.post(
             `/api/v1/agent-runs/${run.id}/messages`,
             { text: "focus on the flaky test" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(res.status).toBe(201);
         const body = await json(res);
@@ -471,15 +502,16 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         const empty = await http.post(
             `/api/v1/agent-runs/${run.id}/messages`,
             { text: "   " },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(empty.status).toBe(400);
 
-        await http.post(`/api/v1/agent-runs/${run.id}/cancel`, {}, tok("bob@example.com"));
+        await http.post(`/api/v1/agent-runs/${run.id}/cancel`, {}, tok("bob@example.com"),
+        );
         const late = await http.post(
             `/api/v1/agent-runs/${run.id}/messages`,
             { text: "still there?" },
-            tok("bob@example.com")
+            tok("bob@example.com"),
         );
         expect(late.status).toBe(409);
         expect((await json(late)).code).toBe("TERMINAL_STATE");
@@ -493,25 +525,25 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         const approve = await approveHttp(
             run.id,
             { planVersion: 2, decision: "APPROVED", baseCommit: "base-9" },
-            member
+            member,
         );
         expect(approve.status).toBe(403);
         const cancel = await http.post(
             `/api/v1/agent-runs/${run.id}/cancel`,
             {},
-            member
+            member,
         );
         expect(cancel.status).toBe(403);
         const resume = await http.post(
             `/api/v1/agent-runs/${run.id}/resume`,
             {},
-            member
+            member,
         );
         expect(resume.status).toBe(403);
         const message = await http.post(
             `/api/v1/agent-runs/${run.id}/messages`,
             { text: "hi" },
-            member
+            member,
         );
         expect(message.status).toBe(403);
 
@@ -523,18 +555,61 @@ describe("agent run API — cancel, resume, messages, action permissions", () =>
         const foreign = await http.post(
             `/api/v1/agent-runs/${run.id}/cancel`,
             {},
-            tok("dave@example.com")
+            tok("dave@example.com"),
         );
         expect(foreign.status).toBe(403);
-        const anon = await http.post(`/api/v1/agent-runs/${run.id}/cancel`, {}, null);
+        const anon = await http.post(`/api/v1/agent-runs/${run.id}/cancel`, {}, null,
+        );
         expect(anon.status).toBe(401);
 
         // ADMIN can operate the run as well
         const adminCancel = await http.post(
             `/api/v1/agent-runs/${run.id}/cancel`,
             { reason: "admin stop" },
-            tok("alice@example.com")
+            tok("alice@example.com"),
         );
         expect(adminCancel.status).toBe(200);
+    });
+});
+
+describe("transactional HTTP approval failures", () => {
+    test("enqueue failure rolls back the decision, event and transition; retry succeeds once", async () => {
+        const run = await launch("iss_1");
+        await advanceToAwaitingApproval(run.id);
+        const before = await eventsFor(run.id);
+        const enqueue = jobStore.enqueue.bind(jobStore);
+        jobStore.enqueue = async () => {
+            throw new Error("injected approval enqueue failure");
+        };
+        const body = {
+            planVersion: 2,
+            decision: "APPROVED",
+            baseCommit: "base-9",
+        };
+        expect(
+            (await approveHttp(run.id, body, tok("bob@example.com"))).status,
+        ).toBe(500);
+        expect(
+            (await prisma.agentRun.findUnique({ where: { id: run.id } }))!
+                .status,
+        ).toBe("AWAITING_APPROVAL");
+        expect(
+            await prisma.runApproval.findMany({ where: { runId: run.id } }),
+        ).toHaveLength(0);
+        expect(await eventsFor(run.id)).toEqual(before);
+        jobStore.enqueue = enqueue;
+        const results = await Promise.all(
+            Array.from({ length: 6 }, () =>
+                approveHttp(run.id, body, tok("bob@example.com")),
+            ),
+        );
+        expect(results.map((r) => r.status).sort()).toEqual([
+            200, 200, 200, 200, 200, 201,
+        ]);
+        expect(
+            (await eventsFor(run.id)).filter(
+                (e) => e.type === "run.approval.decided",
+            ),
+        ).toHaveLength(1);
     });
 });

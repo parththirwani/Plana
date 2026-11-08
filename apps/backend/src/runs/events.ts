@@ -22,6 +22,8 @@ export const RUN_EVENT_TYPES = [
     "run.plan.updated",
     "run.base.pinned",
     "run.error",
+    "run.publication.acknowledged",
+    "run.cleanup.completed",
 ] as const;
 
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number];

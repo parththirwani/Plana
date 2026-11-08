@@ -1,3 +1,4 @@
+process.env.AGENT_EXECUTION_MODE = "fake";
 import {
     describe,
     test,
@@ -8,7 +9,8 @@ import {
     mock,
 } from "bun:test";
 import { prismaMock } from "../test-utils/prismaMock";
-import type { MockBoard, MockIssue, MockSection } from "../test-utils/prismaMock";
+import type { MockBoard, MockIssue, MockSection,
+} from "../test-utils/prismaMock";
 import { createMemoryJobStore } from "../jobs/memoryJobStore";
 import { setJobStore } from "../jobs/jobStore";
 import { DEFAULT_REPO_FILES } from "../adapters/fakeSandbox";
@@ -65,19 +67,23 @@ const prisma = prismaMock.prisma;
 const fetchCalls: string[] = [];
 const originalFetch = globalThis.fetch;
 
-type Outcome = { jobId: string; jobType: string; runId: string | null; status: string } | null;
+type Outcome = { jobId: string; jobType: string; runId: string | null; status: string;
+    error?: string;
+} | null;
 
 const INITIAL_TRACKED = Object.keys(DEFAULT_REPO_FILES).sort();
 const rowOf = async (runId: string) => (await getRunById(runId))!;
 const eventsFor = async (runId: string): Promise<any[]> =>
-    (await prisma.runEvent.findMany({ where: { runId }, orderBy: { sequence: "asc" } })) as any[];
+    (await prisma.runEvent.findMany({ where: { runId }, orderBy: { sequence: "asc" },
+    })) as any[];
 const statusChain = (events: any[]) =>
     events.filter((e) => e.type === "run.status.changed").map((e) => e.data.to);
 
 let store: ReturnType<typeof createMemoryJobStore>;
 let keySeq = 0;
 
-const launch = async (issueId: string, overrides: Record<string, unknown> = {}) => {
+const launch = async (issueId: string, overrides: Record<string, unknown> = {},
+) => {
     // Mirrors exactly what POST /issues/:id/agent-runs enqueues (CP4).
     const created = await createRun({
         issueId,
@@ -95,7 +101,8 @@ const launch = async (issueId: string, overrides: Record<string, unknown> = {}) 
             type: "agent.run.execute",
             runId: created.run.id,
             idempotencyKey: `run:${created.run.id}:start`,
-            payload: { reason: "created", executionMode: created.run.executionMode },
+            payload: { reason: "created", executionMode: created.run.executionMode,
+            },
         });
     }
     return created.run as any;
@@ -104,7 +111,8 @@ const launch = async (issueId: string, overrides: Record<string, unknown> = {}) 
 beforeAll(() => {
     (globalThis as any).fetch = async (input: unknown) => {
         fetchCalls.push(String(input));
-        throw new Error("NETWORK CALL DURING WORKER TESTS — the worker must never touch the network");
+        throw new Error("NETWORK CALL DURING WORKER TESTS — the worker must never touch the network",
+        );
     };
 });
 
@@ -115,10 +123,14 @@ afterAll(() => {
 beforeEach(() => {
     prismaMock.reset({
         boards: [
-            { id: "brd_1", title: "Board", description: null, organizationId: "org_1", defaultRepository: "acme/web" } as MockBoard,
+            { id: "brd_1", title: "Board", description: null, organizationId: "org_1", defaultRepository: "acme/web",
+            } as MockBoard,
         ],
-        sections: [{ id: "sec_1", title: "Todo", order: 0, boardId: "brd_1" } as MockSection],
-        issues: ["iss_1", "iss_3", "iss_4", "iss_5", "iss_6", "iss_7", "iss_8"].map(
+        sections: [{ id: "sec_1", title: "Todo", order: 0, boardId: "brd_1",
+            } as MockSection,
+        ],
+        issues: ["iss_1", "iss_3", "iss_4", "iss_5", "iss_6", "iss_7", "iss_8",
+        ].map(
             (id) =>
                 ({
                     id,
@@ -130,10 +142,10 @@ beforeEach(() => {
                     sectionId: "sec_1",
                     assigneeIds: [],
                     repository: "acme/web",
-                }) as MockIssue
+                }) as MockIssue,
         ),
     });
-    store = createMemoryJobStore();
+    store = createMemoryJobStore(prismaMock.prisma as any);
     setJobStore(store);
     setRunEventPublisher(async () => {});
     fetchCalls.length = 0;
@@ -164,8 +176,10 @@ describe("worker: IMPLEMENT pipeline end-to-end with a fake adapter", () => {
             "COMPLETED",
         ]);
         // The sandbox exists BEFORE any engine output.
-        const lifecycleIdx = events.findIndex((e) => e.type === "run.sandbox.lifecycle");
-        const firstOutputIdx = events.findIndex((e) => e.type === "run.engine.output");
+        const lifecycleIdx = events.findIndex((e) => e.type === "run.sandbox.lifecycle",
+        );
+        const firstOutputIdx = events.findIndex((e) => e.type === "run.engine.output",
+        );
         expect(lifecycleIdx).toBeGreaterThan(0);
         expect(lifecycleIdx).toBeLessThan(firstOutputIdx);
 
@@ -194,14 +208,17 @@ describe("worker: IMPLEMENT pipeline end-to-end with a fake adapter", () => {
             "CLAUDE_CODE=fake:CLAUDE_CODE",
             "CODEX=fake:CODEX",
             "OPENCODE=fake:OPENCODE",
+            "PI=fake:PI",
         ]);
+        await worker.drain();
         expect(await worker.runOnce()).toBeNull();
     });
 });
 
 describe("worker (a): PLAN_AND_APPROVE changes nothing before approval; exact plan version gates resume", () => {
     test("gate holds: no tracked change pre-approval, wrong-version approval 409s, exact approval implements", async () => {
-        const run = await launch("iss_3", { executionMode: "PLAN_AND_APPROVE" });
+        const run = await launch("iss_3", { executionMode: "PLAN_AND_APPROVE",
+        });
         const worker = createRunWorker({ store });
 
         const gate: Outcome = await worker.runOnce();
@@ -214,12 +231,14 @@ describe("worker (a): PLAN_AND_APPROVE changes nothing before approval; exact pl
         expect(sandbox.state).toBe("PAUSED");
         // NO tracked-file change before approval.
         expect(await sandbox.trackedPaths()).toEqual(INITIAL_TRACKED);
-        expect(Object.keys(sandbox.snapshotFiles()).sort()).toEqual(INITIAL_TRACKED);
+        expect(Object.keys(sandbox.snapshotFiles()).sort()).toEqual(INITIAL_TRACKED,
+        );
 
         // Approving a version that does not exist fails cleanly (no side
         // effects) — the gate stays shut.
         await expect(
-            recordApproval({ runId: run.id, planVersion: 2, decision: "APPROVED", decidedBy: "alice" })
+            recordApproval({ runId: run.id, planVersion: 2, decision: "APPROVED", decidedBy: "alice",
+            }),
         ).rejects.toThrow(/stale/i);
         expect((await rowOf(run.id)).status).toBe("AWAITING_APPROVAL");
 
@@ -238,16 +257,19 @@ describe("worker (a): PLAN_AND_APPROVE changes nothing before approval; exact pl
         expect(row.status).toBe("COMPLETED");
         expect(row.activeIssueId).toBeNull();
 
-        const files = Object.keys(worker.deps.sandboxes.byRun(run.id)!.snapshotFiles());
+        const files = Object.keys(worker.deps.sandboxes.byRun(run.id)!.snapshotFiles(),
+        );
         expect(files).toContain(`src/issue-${run.id}.ts`); // tracked changes only AFTER approval
 
         const events = await eventsFor(run.id);
         expect(
-            events.some((e) => e.type === "run.sandbox.lifecycle" && e.data.phase === "paused-awaiting-approval")
+            events.some((e) => e.type === "run.sandbox.lifecycle" && e.data.phase === "paused-awaiting-approval",
+            ),
         ).toBe(true);
-        const requestedIdx = events.findIndex((e) => e.type === "run.approval.requested");
+        const requestedIdx = events.findIndex((e) => e.type === "run.approval.requested",
+        );
         const reconnectedIdx = events.findIndex(
-            (e) => e.type === "run.sandbox.lifecycle" && e.data.phase === "reconnected"
+            (e) => e.type === "run.sandbox.lifecycle" && e.data.phase === "reconnected",
         );
         expect(reconnectedIdx).toBeGreaterThan(-1);
         expect(reconnectedIdx).toBeGreaterThan(requestedIdx);
@@ -258,12 +280,14 @@ describe("worker (a): PLAN_AND_APPROVE changes nothing before approval; exact pl
 
 describe("worker (b): a stale approval (base moved after approval) implements nothing and forces regeneration + re-approval", () => {
     test("stale-at-claim is fenced, plan v2 is regenerated against the NEW base, only re-approval completes", async () => {
-        const run = await launch("iss_4", { executionMode: "PLAN_AND_APPROVE" });
+        const run = await launch("iss_4", { executionMode: "PLAN_AND_APPROVE",
+        });
         const worker = createRunWorker({ store });
         expect((await worker.runOnce())!.status).toBe("awaiting-approval");
 
         // Approve v1 while it is still current...
-        await recordApproval({ runId: run.id, planVersion: 1, decision: "APPROVED", decidedBy: "alice" });
+        await recordApproval({ runId: run.id, planVersion: 1, decision: "APPROVED", decidedBy: "alice",
+        });
         // ...then the repository base moves BEFORE the worker claims the job.
         await prisma.agentRun.update({
             where: { id: run.id },
@@ -288,7 +312,6 @@ describe("worker (b): a stale approval (base moved after approval) implements no
             "PLANNING",
             "AWAITING_APPROVAL",
             "IMPLEMENTING",
-            "AWAITING_APPROVAL",
             "PLANNING",
             "AWAITING_APPROVAL",
         ]);
@@ -300,15 +323,18 @@ describe("worker (b): a stale approval (base moved after approval) implements no
 
         // NOTHING was implemented for the stale approval.
         const sandbox = worker.deps.sandboxes.byRun(run.id)!;
-        expect(Object.keys(sandbox.snapshotFiles()).sort()).toEqual(INITIAL_TRACKED);
+        expect(Object.keys(sandbox.snapshotFiles()).sort()).toEqual(INITIAL_TRACKED,
+        );
 
         // Only re-approval of the REGENERATED plan completes — and it builds
         // on the CURRENT base, not the stale one.
-        await recordApproval({ runId: run.id, planVersion: 2, decision: "APPROVED", decidedBy: "alice" });
+        await recordApproval({ runId: run.id, planVersion: 2, decision: "APPROVED", decidedBy: "alice",
+        });
         const done: Outcome = await worker.runOnce();
         expect(done!.status).toBe("completed");
         expect((await rowOf(run.id)).status).toBe("COMPLETED");
-        const intent = (await eventsFor(run.id)).find((e) => e.type === "run.publication.intent");
+        const intent = (await eventsFor(run.id)).find((e) => e.type === "run.publication.intent",
+        );
         expect(intent.data.baseCommit).toBe("base-moved-7");
         expect(intent.data.headCommit).toBe("head-of-base-moved-7");
     });
@@ -325,7 +351,8 @@ describe("worker (c)+(d): a late result cannot publish a cancelled run; cancel r
             afterEvent: async ({ runId }) => {
                 if (!cancelledOnce) {
                     cancelledOnce = true;
-                    await cancelRun({ runId, actorId: "alice", reason: "owner cancelled mid-flight" });
+                    await cancelRun({ runId, actorId: "alice", reason: "owner cancelled mid-flight",
+                    });
                 }
             },
         });
@@ -339,14 +366,17 @@ describe("worker (c)+(d): a late result cannot publish a cancelled run; cancel r
 
         const events = await eventsFor(run.id);
         // (c) the late result published NOTHING.
-        expect(events.some((e) => e.type === "run.publication.intent")).toBe(false);
-        expect(statusChain(events)).toEqual(["PROVISIONING", "IMPLEMENTING", "CANCELLED"]);
+        expect(events.some((e) => e.type === "run.publication.intent")).toBe(false,
+        );
+        expect(statusChain(events)).toEqual(["PROVISIONING", "IMPLEMENTING", "CANCELLED",
+        ]);
 
         // The job itself closes (work abandoned) and the fake engine stopped.
         expect((await store.get(outcome!.jobId))!.status).toBe("COMPLETED");
         const firstOutput = events.find((e) => e.type === "run.engine.output");
         const codex = worker.deps.registry.get("CODEX") as any;
-        expect(codex.sessionPhase(firstOutput.data.sessionId)).toBe("cancelled");
+        expect(codex.sessionPhase(firstOutput.data.sessionId)).toBe("cancelled",
+        );
         expect(worker.deps.sandboxes.byRun(run.id)!.state).toBe("KILLED");
 
         // (d) a NEW run for the SAME issue can start immediately and completes.
@@ -355,15 +385,23 @@ describe("worker (c)+(d): a late result cannot publish a cancelled run; cancel r
         const outcome2: Outcome = await worker.runOnce();
         expect(outcome2!.status).toBe("completed");
         expect((await rowOf(run2.id)).status).toBe("COMPLETED");
-        expect((await eventsFor(run2.id)).some((e) => e.type === "run.publication.intent")).toBe(true);
-        expect((await eventsFor(run.id)).some((e) => e.type === "run.publication.intent")).toBe(false);
+        expect((await eventsFor(run2.id)).some((e) => e.type === "run.publication.intent",
+            ),
+        ).toBe(true);
+        expect((await eventsFor(run.id)).some((e) => e.type === "run.publication.intent",
+            ),
+        ).toBe(false);
     });
 });
 
 describe("worker: unsupported engines fail honestly, never substituted", () => {
-    test("PI run (possible only by direct row insert — the API rejects it) ends FAILED with the catalog reason", async () => {
-        const run = await launch("iss_6", { engine: "PI", model: "pi-1" });
-        const worker = createRunWorker({ store });
+    test("an explicitly unregistered engine fails without substitution", async () => {
+        const run = await launch("iss_6");
+        const { createEngineAdapterRegistry } =
+            await import("../adapters/registry");
+        const worker = createRunWorker({ store,
+            registry: createEngineAdapterRegistry([]),
+        });
 
         const outcome: Outcome = await worker.runOnce();
         expect(outcome!.status).toBe("failed-unsupported-engine");
@@ -372,14 +410,14 @@ describe("worker: unsupported engines fail honestly, never substituted", () => {
         expect(row.status).toBe("FAILED");
         expect(row.activeIssueId).toBeNull();
         // Substituted with NOTHING: the row still names the requested engine.
-        expect(row.engine).toBe("PI");
-        expect(row.model).toBe("pi-1");
+        expect(row.engine).toBe("CODEX");
+        expect(row.model).toBe("gpt-5");
 
         const events = await eventsFor(run.id);
         const error = events.find((e) => e.type === "run.error");
         expect(error.data.code).toBe("UNSUPPORTED_CAPABILITY");
         expect(error.data.substituted).toBe(false);
-        expect(String(error.data.detail)).toContain("has not shipped");
+        expect(String(error.data.detail)).toContain("no engine adapter");
         expect(statusChain(events)).toEqual(["FAILED"]);
         expect((await store.get(outcome!.jobId))!.status).toBe("COMPLETED");
     });
@@ -396,7 +434,8 @@ describe("worker: zombie fencing — a reclaimed lease cannot publish", () => {
                 if (!hijacked) {
                     hijacked = true;
                     // Lease expires and another worker takes over (fencing 2).
-                    const future = new Date(Date.now() + 10 * 60_000).toISOString();
+                    const future = new Date(Date.now() + 10 * 60_000,
+                    ).toISOString();
                     const stolen = await store.claimNext("worker-B", future, {
                         types: ["agent.run.execute"],
                     });
@@ -407,13 +446,14 @@ describe("worker: zombie fencing — a reclaimed lease cannot publish", () => {
         });
 
         const outcome: Outcome = await workerA.runOnce();
-        expect(outcome!.status.startsWith("aborted-lost-lease")).toBe(true);
-        expect(outcome!.status.endsWith("+lost-lease")).toBe(true);
+        expect(outcome!.status).toBe("job-failed-lost-lease");
+        expect(outcome!.error).toContain("Queue ownership lost");
 
         const row = await rowOf(run.id);
-        expect(row.status).toBe("REVIEWING"); // stopped BEFORE PUBLISHING
+        expect(row.status).toBe("IMPLEMENTING"); // the first write after reclaim is fenced
         const events = await eventsFor(run.id);
-        expect(events.some((e) => e.type === "run.publication.intent")).toBe(false);
+        expect(events.some((e) => e.type === "run.publication.intent")).toBe(false,
+        );
 
         const job = await store.get(outcome!.jobId);
         expect(job!.lockedBy).toBe("worker-B"); // zombie completion was rejected
@@ -424,7 +464,8 @@ describe("worker: zombie fencing — a reclaimed lease cannot publish", () => {
 
 describe("worker: run messages route through the adapter contract", () => {
     test("a follow-up message is delivered to the open session and recorded durably", async () => {
-        const run = await launch("iss_7", { executionMode: "PLAN_AND_APPROVE" });
+        const run = await launch("iss_7", { executionMode: "PLAN_AND_APPROVE",
+        });
         const worker = createRunWorker({ store });
         expect((await worker.runOnce())!.status).toBe("awaiting-approval");
 
@@ -434,12 +475,14 @@ describe("worker: run messages route through the adapter contract", () => {
             type: "run.message",
             issueId: run.issueId,
             status: row.status,
-            data: { kind: "user-message", authorId: "alice", text: "also update the docs" },
+            data: { kind: "user-message", authorId: "alice", text: "also update the docs",
+            },
         });
         await store.enqueue({
             type: "agent.run.message",
             runId: run.id,
-            payload: { eventSequence: messageEvent.sequence, text: "also update the docs" },
+            payload: { eventSequence: messageEvent.sequence, text: "also update the docs",
+            },
         });
 
         const outcome: Outcome = await worker.runOnce();
@@ -460,14 +503,18 @@ describe("worker: run messages route through the adapter contract", () => {
 describe("worker: no-network guarantee + idle queue", () => {
     test("global fetch was never invoked by any worker flow and an empty queue claims nothing", async () => {
         // Re-run a full lifecycle with the fetch trap armed, then assert.
-        const run = await launch("iss_1", { executionMode: "PLAN_AND_APPROVE" });
+        const run = await launch("iss_1", { executionMode: "PLAN_AND_APPROVE",
+        });
         const worker = createRunWorker({ store });
         await worker.runOnce();
-        await recordApproval({ runId: run.id, planVersion: 1, decision: "APPROVED", decidedBy: "alice" });
+        await recordApproval({ runId: run.id, planVersion: 1, decision: "APPROVED", decidedBy: "alice",
+        });
         await worker.runOnce();
         expect((await rowOf(run.id)).status).toBe("COMPLETED");
 
         expect(fetchCalls).toHaveLength(0); // (e) nothing touched the network
-        expect(await worker.runOnce()).toBeNull(); // idle queue claims nothing
+        await worker.drain();
+        await worker.drain();
+        expect(await worker.runOnce()).toBeNull(); // durable cleanup has drained
     });
 });

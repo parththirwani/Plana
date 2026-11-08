@@ -1,42 +1,45 @@
+import { toJsonInput } from "../runs/dbTypes";
+import { createSerialLock } from "../lib/serialLock";
+import { EngineError } from "../adapters/contract";
 import { randomUUID } from "crypto";
-import type { SandboxFactory } from "../adapters/fakeSandbox";
-import { createFakeSandboxFactory } from "../adapters/fakeSandbox";
-import type { EngineAdapterRegistry } from "../adapters/registry";
-import { createFakeOnlyRegistry } from "../adapters/registry";
+import { prisma } from "@repo/db/db";
 import { getJobStore } from "../jobs/jobStore";
 import type { JobStore } from "../jobs/types";
-import { claimRunLease, getRunById } from "../runs/runRepository";
-import { prisma } from "@repo/db/db";
 import { DEFAULT_LEASE_MS } from "../jobs/types";
-import type { AgentRunRow } from "../runs/dbTypes";
-import { isTerminalRunStatus } from "../runs/status";
 import {
+    createFakeOnlyRegistry,
+    type EngineAdapterRegistry,
+} from "../adapters/registry";
+import { createFakeSandboxFactory } from "../adapters/fakeSandbox";
+import type { SandboxFactory } from "../adapters/contract";
+import {
+    claimRunLease,
+    getRunById,
+    renewRunLease,
+    transitionRun,
+} from "../runs/runRepository";
+import { RunError } from "../runs/errors";
+import { isTerminalRunStatus } from "../runs/status";
+import { readRuntime, saveRuntime } from "./runtime";
+import {
+    fakeChecks,
+    fakePublisher,
+    type Checks,
+    type Publisher,
+} from "./services";
+import {
+    cleanupRun,
     dispatchExecute,
     dispatchMessage,
-    type WorkerContext,
     type WorkerDeps,
+    type WorkerContext,
 } from "./executionFlows";
 
-// Durable agent-run worker (CP5).
-//
-// The worker claims the SAME durable job types the HTTP layer enqueues
-// (agent.run.execute / agent.run.message, see src/routers/agentRun.ts and
-// src/runs/approvals.ts) from the injectable JobStore and drives the run
-// lifecycle through the run repository. It performs NO HTTP, NO database
-// polling and NO inline engine work outside the adapter contract.
-//
-// Safety properties enforced here (each covered by src/test/
-// agent-run-worker.test.ts):
-//   * a terminal run is NEVER touched — a claimed job for a
-//     cancelled/failed/completed run completes as a no-op, so a late result
-//     can neither revive the run nor publish through it;
-//   * every engine step re-reads the run row, so a cancel landing mid-stream
-//     stops the engine and blocks the publication intent;
-//   * job completion is fencing-guarded: if the lease was reclaimed while we
-//     worked, the outcome is reported with +lost-lease and the store rejects
-//     the completion.
-
-export const AGENT_JOB_TYPES = ["agent.run.execute", "agent.run.message"] as const;
+export const AGENT_JOB_TYPES = [
+    "agent.run.execute",
+    "agent.run.message",
+    "agent.run.cleanup",
+] as const;
 
 export type WorkerOutcome = {
     jobId: string;
@@ -47,123 +50,384 @@ export type WorkerOutcome = {
 };
 
 export type RunWorkerOptions = {
+    signal?: AbortSignal;
     store?: JobStore;
     registry?: EngineAdapterRegistry;
     sandboxes?: SandboxFactory;
+    checks?: Checks;
+    publisher?: Publisher;
     owner?: string;
     now?: () => string;
     afterEvent?: WorkerDeps["afterEvent"];
-    /** Run-lease lifetime for one attempt. Long streams must renew it (see
-     *  `renewRunLease`); a short value makes reclaim-after-stall cheap. */
     leaseMs?: number;
 };
 
 export const createRunWorker = (options: RunWorkerOptions = {}) => {
+    if (
+        process.env.AGENT_EXECUTION_MODE !== "fake" &&
+        (!options.registry ||
+            !options.sandboxes ||
+            !options.checks ||
+            !options.publisher)
+    )
+        throw new Error(
+            "Agent execution is disabled: explicitly select fake mode or provide qualified engine, sandbox, checks and publisher implementations",
+        );
     const deps: WorkerDeps = {
         store: options.store ?? getJobStore(),
-        // Fakes ONLY in this container (see adapters/registry.ts): the worker
-        // cannot reach a real provider even by accident, and tests additionally
-        // assert global fetch is untouched.
         registry: options.registry ?? createFakeOnlyRegistry(),
         sandboxes: options.sandboxes ?? createFakeSandboxFactory(),
-        owner: options.owner ?? `agent-worker-${randomUUID().slice(0, 8)}`,
+        checks: options.checks ?? fakeChecks,
+        publisher: options.publisher ?? fakePublisher,
+        owner: options.owner ?? `worker-${randomUUID()}`,
         now: options.now ?? (() => new Date().toISOString()),
-        ...(options.afterEvent ? { afterEvent: options.afterEvent } : {}),
+        afterEvent: options.afterEvent,
     };
-    const ctx: WorkerContext = { deps, sessions: new Map() };
-    /**
-     * ACQUIRE THE RUN LEASE for one attempt.
-     *
-     * The queue claim only proves this worker holds the JOB; the run needs its
-     * own single-writer lease, or every guarded transition would carry a fencing
-     * token the row has never heard of. `claimRunLease` stamps
-     * `owner`/`lease_expires_at` and raises `fencing_token` monotonically — it
-     * changes NO status — so a reclaim by another live process fences this worker
-     * out at its very next guarded write. That is the mechanism that stops a
-     * zombie from moving a cancelled run or publishing through it: the queue's job
-     * lease alone was never enough, because it says nothing about who may write
-     * THIS run.
-     */
-    const bindOwnership = async (run: AgentRunRow) => {
-        ctx.ownership = await claimRunLease(prisma, {
-            runId: run.id,
-            machineId: deps.owner,
-            leaseTtlMillis: options.leaseMs ?? DEFAULT_LEASE_MS,
-            expectedStatus: run.status,
+    const sessions = new Map<
+        string,
+        import("./executionFlows").RunSessionRef
+    >();
+    const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
+    if (leaseMs < 30) throw new Error("leaseMs must be at least 30ms");
+    const intervalMs = Math.max(5, Math.min(15_000, Math.floor(leaseMs / 3)));
+    const release = async (
+        runId: string,
+        claim: import("../runs/stateMachine").RunOwnership,
+    ) => {
+        await prisma.agentRun.updateMany({
+            where: {
+                id: runId,
+                owner: claim.machineId,
+                fencingToken: claim.fencingToken,
+            },
+            data: { owner: null, leaseExpiresAt: null },
         });
     };
-
-    /** Claim and fully process one job; null when the queue is empty. */
+    const reconcileFailures = async () => {
+        for (const job of await deps.store.listFailed()) {
+            if (!job.runId || job.type === "agent.run.cleanup") continue;
+            const run = await getRunById(job.runId);
+            if (!run || isTerminalRunStatus(run.status)) continue;
+            const runtime = readRuntime(run);
+            if (runtime.handledFailures.includes(job.id)) continue;
+            let claim;
+            try {
+                claim = await prisma.$transaction((tx) =>
+                    claimRunLease(tx, {
+                        runId: run.id,
+                        machineId: `${deps.owner}:reconcile:${randomUUID()}`,
+                        expectedStatus: run.status,
+                        leaseTtlMillis: leaseMs,
+                    }),
+                );
+                runtime.handledFailures.push(job.id);
+                if (
+                    run.status !== "BLOCKED" &&
+                    run.status !== "LIMIT_REACHED"
+                ) {
+                    runtime.pausedFrom = run.status;
+                    await transitionRun({
+                        runId: run.id,
+                        expectedFrom: run.status,
+                        to: "BLOCKED",
+                        claim,
+                        commit: { runtime: toJsonInput(runtime) },
+                        data: { error: job.lastError, exhaustedJobId: job.id },
+                    });
+                } else await saveRuntime(run.id, runtime, claim);
+            } catch (error) {
+                if (!(
+                    error instanceof RunError && error.code === "STALE_CLAIM"
+                ))
+                    throw error;
+            } finally {
+                if (claim) await release(run.id, claim);
+            }
+        }
+    };
     const runOnce = async (): Promise<WorkerOutcome | null> => {
-        const claim = await deps.store.claimNext(deps.owner, deps.now(), {
+        await reconcileFailures();
+        const claimed = await deps.store.claimNext(deps.owner, deps.now(), {
             types: [...AGENT_JOB_TYPES],
+            leaseMs,
         });
-        if (!claim) return null;
-        const { job, fencingToken } = claim;
-        const base: Omit<WorkerOutcome, "status"> = {
+        if (!claimed) {
+            await reconcileFailures();
+            return null;
+        }
+        const { job, fencingToken } = claimed;
+        const base = {
             jobId: job.id,
             jobType: job.type,
             runId: job.runId,
         };
-
-        let status: string;
-        let error: string | undefined;
+        const controller = new AbortController();
+        const stop = () => controller.abort(options.signal?.reason);
+        options.signal?.addEventListener("abort", stop, { once: true });
+        if (options.signal?.aborted) stop();
+        let ctx: WorkerContext | undefined;
+        let timer: ReturnType<typeof setInterval> | undefined;
+        let heartbeat = Promise.resolve();
         try {
-            if (!job.runId) {
-                status = "ignored-no-run";
-            } else {
-                const run = await getRunById(job.runId);
-                if (!run) {
-                    status = "ignored-missing-run";
-                } else if (isTerminalRunStatus(run.status)) {
-                    // Terminal finality at the worker level: never mutate a
-                    // finished run, never publish through it. The job itself
-                    // completes as a no-op.
-                    status = `ignored-terminal-run:${run.status}`;
-                } else {
-                    // Own the run BEFORE the first write; a live owner elsewhere
-                    // raises STALE_CLAIM and the job is retried (never guessed).
-                    await bindOwnership(run);
-                    if (job.type === "agent.run.message") {
-                        status = await dispatchMessage(ctx, run, job);
-                    } else {
-                        status = await dispatchExecute(ctx, run, job, {
+            const run = job.runId ? await getRunById(job.runId) : null;
+            if (
+                !run ||
+                (isTerminalRunStatus(run.status) &&
+                    job.type !== "agent.run.cleanup")
+            ) {
+                const done = await deps.store.complete(
+                    job.id,
+                    deps.owner,
+                    fencingToken,
+                    deps.now(),
+                );
+                return {
+                    ...base,
+                    status: `ignored-terminal-run:${run?.status ?? "missing"}${done ? "" : "+lost-lease"}`,
+                };
+            }
+            const ownership = await prisma.$transaction((tx) =>
+                claimRunLease(tx, {
+                    runId: run.id,
+                    machineId: `${deps.owner}:${job.id}:${fencingToken}:${randomUUID()}`,
+                    expectedStatus: run.status,
+                    leaseTtlMillis: leaseMs,
+                }),
+            );
+            Object.assign(ownership, {
+                jobId: job.id,
+                jobOwner: deps.owner,
+                jobFencingToken: fencingToken,
+            });
+            ctx = {
+                deps,
+                sessions,
+                ownership,
+                signal: controller.signal,
+                appliedInputs: new Set(),
+                withInputs: createSerialLock(),
+            };
+            const current = ctx;
+            timer = setInterval(() => {
+                heartbeat = heartbeat
+                    .then(async () => {
+                        if (controller.signal.aborted) return;
+                        const row = await getRunById(run.id);
+                        if (
+                            !row ||
+                            (row.status === "CANCELLED" &&
+                                job.type !== "agent.run.cleanup")
+                        ) {
+                            controller.abort(
+                                new RunError("TERMINAL_STATE", "Run cancelled"),
+                            );
+                            return;
+                        }
+                        const renewed = await prisma.$transaction((tx) =>
+                            renewRunLease(tx, {
+                                runId: run.id,
+                                claim: ownership,
+                                leaseTtlMillis: leaseMs,
+                                reason: "worker heartbeat",
+                            }),
+                        );
+                        const queueLease = await deps.store.renewLease(
+                            job.id,
+                            deps.owner,
+                            fencingToken,
+                            deps.now(),
+                            leaseMs,
+                        );
+                        if (!renewed || !queueLease)
+                            controller.abort(
+                                new RunError(
+                                    "STALE_CLAIM",
+                                    "Run or queue ownership lost",
+                                ),
+                            );
+                        else await current.onHeartbeat?.();
+                    })
+                    .catch((error) => controller.abort(error));
+            }, intervalMs);
+            let status =
+                job.type === "agent.run.cleanup"
+                    ? await cleanupRun(current, run)
+                    : job.type === "agent.run.message"
+                      ? await dispatchMessage(current, run, job)
+                      : await dispatchExecute(current, run, job, {
                             jobId: job.id,
                             fencingToken,
                         });
-                    }
+            current.onHeartbeat = undefined;
+            if (timer) clearInterval(timer);
+            await heartbeat;
+            controller.signal.throwIfAborted();
+            if (status === "awaiting-publication") {
+                await deps.store.defer(
+                    job.id,
+                    deps.owner,
+                    fencingToken,
+                    deps.now(),
+                    new Date(Date.now() + 1000).toISOString(),
+                );
+                return { ...base, status };
+            }
+
+            const done = await deps.store.complete(
+                job.id,
+                deps.owner,
+                fencingToken,
+                deps.now(),
+            );
+            if (!done) status += "+lost-lease";
+            return { ...base, status };
+        } catch (error) {
+            const message =
+                error instanceof Error ? error.message : String(error);
+            if (timer) clearInterval(timer);
+            await heartbeat;
+            const row = job.runId ? await getRunById(job.runId) : null;
+            const ref = job.runId ? sessions.get(job.runId) : undefined;
+            // Cancel this attempt's engine promptly even if it stopped producing
+            // output. A replacement's sandbox is never killed on lease loss.
+            if (
+                ref &&
+                (controller.signal.aborted || row?.status === "CANCELLED")
+            )
+                void ref.adapter.cancel(ref.sessionId).catch(() => {});
+            if (row?.status === "CANCELLED" && ctx) {
+                await cleanupRun(ctx, row);
+                await deps.store.complete(
+                    job.id,
+                    deps.owner,
+                    fencingToken,
+                    deps.now(),
+                );
+                return { ...base, status: "cancelled-observed:CANCELLED" };
+            }
+            if (
+                !ctx &&
+                error instanceof RunError &&
+                error.code === "STALE_CLAIM"
+            ) {
+                await deps.store.defer(
+                    job.id,
+                    deps.owner,
+                    fencingToken,
+                    deps.now(),
+                    new Date(Date.now() + 1000).toISOString(),
+                );
+                return {
+                    ...base,
+                    status: "deferred-run-owned",
+                    error: message,
+                };
+            }
+            if (
+                ctx &&
+                row &&
+                !isTerminalRunStatus(row.status) &&
+                error instanceof EngineError &&
+                error.code === "UNSUPPORTED_CAPABILITY"
+            ) {
+                const failedRun = await transitionRun({
+                    runId: row.id,
+                    expectedFrom: row.status,
+                    to: "FAILED",
+                    claim: ctx.ownership,
+                    extraEvents: [
+                        {
+                            type: "run.error",
+                            data: {
+                                code: error.code,
+                                detail: error.message,
+                                substituted: false,
+                            },
+                        },
+                    ],
+                    steps: [
+                        async (tx) => {
+                            await deps.store.enqueue(
+                                {
+                                    type: "agent.run.cleanup",
+                                    runId: row.id,
+                                    idempotencyKey: `run:${row.id}:cleanup`,
+                                },
+                                tx,
+                            );
+                        },
+                    ],
+                });
+                await cleanupRun(ctx, failedRun);
+                await deps.store.complete(
+                    job.id,
+                    deps.owner,
+                    fencingToken,
+                    deps.now(),
+                );
+                return {
+                    ...base,
+                    status: "failed-unsupported-engine",
+                    error: message,
+                };
+            }
+            const retryHint =
+                error !== null &&
+                typeof error === "object" &&
+                "retryAfterMs" in error
+                    ? Number(error.retryAfterMs)
+                    : 0;
+            const delay = Math.max(
+                Math.min(60_000, 1000 * 2 ** Math.max(0, job.attempts - 1)),
+                Number.isFinite(retryHint) ? Math.max(0, retryHint) : 0,
+            );
+            const retryAt = new Date(Date.now() + delay).toISOString();
+            if (
+                ctx &&
+                row &&
+                !isTerminalRunStatus(row.status) &&
+                !(error instanceof RunError && error.code === "STALE_CLAIM")
+            ) {
+                if (
+                    error instanceof RunError &&
+                    error.code === "INVALID_INPUT"
+                ) {
+                    await transitionRun({
+                        runId: row.id,
+                        expectedFrom: row.status,
+                        to: "BLOCKED",
+                        claim: ctx.ownership,
+                        data: { error: message },
+                    });
                 }
             }
-        } catch (err) {
-            error = err instanceof Error ? err.message : String(err);
-            console.error(`[agent-worker] job ${job.id} failed:`, error);
             const failed = await deps.store.fail(
                 job.id,
                 deps.owner,
                 fencingToken,
                 deps.now(),
-                error
+                message,
+                retryAt,
             );
-            const outcomeStatus = failed ? "job-failed" : "job-failed-lost-lease";
-            return { ...base, status: outcomeStatus, error };
+            return {
+                ...base,
+                status: failed ? "job-failed" : "job-failed-lost-lease",
+                error: message,
+            };
+        } finally {
+            if (timer) clearInterval(timer);
+            await heartbeat;
+            options.signal?.removeEventListener("abort", stop);
+            if (ctx && job.runId) await release(job.runId, ctx.ownership);
         }
-
-        const done = await deps.store.complete(
-            job.id,
-            deps.owner,
-            fencingToken,
-            deps.now()
-        );
-        if (!done) status = `${status}+lost-lease`;
-        return { ...base, status, ...(error ? { error } : {}) };
     };
 
-    const drain = async (max = 100): Promise<WorkerOutcome[]> => {
+    const drain = async (max = 100) => {
         const outcomes: WorkerOutcome[] = [];
-        for (let i = 0; i < max; i += 1) {
-            const outcome = await runOnce();
-            if (!outcome) break;
-            outcomes.push(outcome);
+        for (let i = 0; i < max; i++) {
+            const result = await runOnce();
+            if (!result) break;
+            outcomes.push(result);
         }
         return outcomes;
     };
@@ -171,7 +435,7 @@ export const createRunWorker = (options: RunWorkerOptions = {}) => {
     return {
         owner: deps.owner,
         deps,
-        ctx,
+        ctx: { sessions },
         runOnce,
         drain,
     };

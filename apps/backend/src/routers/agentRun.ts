@@ -1,3 +1,9 @@
+import { randomUUID } from "crypto";
+import {
+    requestRunCancellation,
+    recordRunMessage,
+    scheduleRunResume,
+} from "../runs/commands";
 import { Router, type Response } from "express";
 import { prisma } from "@repo/db/db";
 import { authMiddleware, type AuthenticatedRequest } from "../middleware/auth";
@@ -15,12 +21,11 @@ import {
 } from "../adapters/capabilities";
 import {
     createRun,
-    cancelRun,
     getRunById,
     listRunsForIssue,
     shapeRun,
 } from "../runs/runRepository";
-import { appendRunEvent, readRunEvents } from "../runs/eventLog";
+import { readRunEvents } from "../runs/eventLog";
 import type { AgentRunRow } from "../runs/dbTypes";
 import { recordApproval } from "../runs/approvals";
 import { isTerminalRunStatus } from "../runs/status";
@@ -79,9 +84,10 @@ const requireIssueAccess = async (
     res: Response,
     req: AuthenticatedRequest,
     issueId: string,
-    minRole: "MEMBER" | "MODERATOR"
+    minRole: "MEMBER" | "MODERATOR",
 ): Promise<
-    | { ok: true; userId: string; organizationId: string; issue: any; board: any }
+    | { ok: true; userId: string; organizationId: string; issue: any; board: any;
+      }
     | { ok: false }
 > => {
     if (!req.user) {
@@ -98,7 +104,8 @@ const requireIssueAccess = async (
         res.status(404).json({ message: "Board not found" });
         return { ok: false };
     }
-    const membership = await getMembership(board.organizationId, req.user.userId);
+    const membership = await getMembership(board.organizationId, req.user.userId,
+    );
     if (!membership || !isAuthorized(membership, "MEMBER")) {
         res.status(403).json({
             message: "Only organization members can access agent runs",
@@ -124,7 +131,7 @@ const requireRunAccess = async (
     res: Response,
     req: AuthenticatedRequest,
     runId: string,
-    minRole: "MEMBER" | "MODERATOR"
+    minRole: "MEMBER" | "MODERATOR",
 ): Promise<{ ok: true; userId: string; run: AgentRunRow } | { ok: false }> => {
     if (!req.user) {
         unauthorized(res);
@@ -154,8 +161,6 @@ const requireRunAccess = async (
 const configForOrg = (organizationId: string) =>
     prisma.organizationAgentConfig.findUnique({ where: { organizationId } });
 
-const nowIso = () => new Date().toISOString();
-
 const router = Router();
 
 // ---------------------------------------------------------------- create ---
@@ -175,7 +180,7 @@ router.post(
                 res,
                 req,
                 req.params.id as string,
-                "MODERATOR"
+                "MODERATOR",
             );
             if (!access.ok) return res;
 
@@ -230,7 +235,10 @@ router.post(
                 });
             }
 
+            const id = `run_${randomUUID()}`;
+            let queued: import("../jobs/types").JobRecord | undefined;
             const result = await createRun({
+                id,
                 issueId: access.issue.id,
                 organizationId: access.organizationId,
                 createdBy: access.userId,
@@ -240,6 +248,23 @@ router.post(
                 executionMode: body.executionMode ?? "IMPLEMENT",
                 repository,
                 idempotencyKey: body.idempotencyKey,
+                onEnqueue: async (tx) => {
+                    queued = (
+                        await getJobStore().enqueue(
+                            {
+                                type: "agent.run.execute",
+                                runId: id,
+                                idempotencyKey: `run:${id}:start`,
+                                payload: {
+                                    reason: "created",
+                                    executionMode:
+                                        body.executionMode ?? "IMPLEMENT",
+                                },
+                            },
+                            tx,
+                        )
+                    ).job;
+                },
             });
 
             if (result.replayed) {
@@ -251,17 +276,7 @@ router.post(
                 });
             }
 
-            // Durable enqueue only — the worker (CP5) claims it later. No
-            // engine/sandbox/GitHub call happens in this request.
-            const { job } = await getJobStore().enqueue({
-                type: "agent.run.execute",
-                runId: result.run.id,
-                idempotencyKey: `run:${result.run.id}:start`,
-                payload: {
-                    reason: "created",
-                    executionMode: result.run.executionMode,
-                },
-            });
+            const job = queued!;
 
             return res.status(201).json({
                 message: "Run queued successfully",
@@ -271,7 +286,7 @@ router.post(
         } catch (error) {
             return respondRunError(res, error);
         }
-    }
+    },
 );
 
 // ------------------------------------------------------- list / read -------
@@ -285,7 +300,7 @@ router.get(
                 res,
                 req,
                 req.params.id as string,
-                "MEMBER"
+                "MEMBER",
             );
             if (!access.ok) return res;
             const runs = await listRunsForIssue(access.issue.id);
@@ -296,7 +311,7 @@ router.get(
         } catch (error) {
             return respondRunError(res, error);
         }
-    }
+    },
 );
 
 router.get(
@@ -308,12 +323,13 @@ router.get(
                 res,
                 req,
                 req.params.id as string,
-                "MEMBER"
+                "MEMBER",
             );
             if (!access.ok) return res;
             const config = await configForOrg(access.organizationId);
             return res.status(200).json({
                 message: "Agent capabilities fetched successfully",
+                simulation: process.env.AGENT_EXECUTION_MODE === "fake",
                 engines: listEngineSpecs(),
                 allowedRepositories: config?.allowedRepositories ?? [],
                 repositories: {
@@ -330,7 +346,7 @@ router.get(
         } catch (error) {
             return respondRunError(res, error);
         }
-    }
+    },
 );
 
 router.get(
@@ -342,7 +358,7 @@ router.get(
                 res,
                 req,
                 req.params.id as string,
-                "MEMBER"
+                "MEMBER",
             );
             if (!access.ok) return res;
             return res.status(200).json({
@@ -352,7 +368,7 @@ router.get(
         } catch (error) {
             return respondRunError(res, error);
         }
-    }
+    },
 );
 
 router.get(
@@ -364,7 +380,7 @@ router.get(
                 res,
                 req,
                 req.params.id as string,
-                "MEMBER"
+                "MEMBER",
             );
             if (!access.ok) return res;
             const afterSequence = Number(req.query.afterSequence ?? 0);
@@ -383,7 +399,7 @@ router.get(
         } catch (error) {
             return respondRunError(res, error);
         }
-    }
+    },
 );
 
 // ------------------------------------------------------------ approvals ----
@@ -403,7 +419,7 @@ router.post(
                 res,
                 req,
                 req.params.id as string,
-                "MODERATOR"
+                "MODERATOR",
             );
             if (!access.ok) return res;
 
@@ -429,7 +445,7 @@ router.post(
         } catch (error) {
             return respondRunError(res, error);
         }
-    }
+    },
 );
 
 // ------------------------------------------------------------- messages ----
@@ -449,7 +465,7 @@ router.post(
                 res,
                 req,
                 req.params.id as string,
-                "MODERATOR"
+                "MODERATOR",
             );
             if (!access.ok) return res;
             if (isTerminalRunStatus(access.run.status)) {
@@ -460,32 +476,20 @@ router.post(
                 });
             }
 
-            const event = await appendRunEvent({
-                runId: access.run.id,
-                type: "run.message",
-                issueId: access.run.issueId,
-                status: access.run.status,
-                data: {
-                    kind: "user-message",
-                    authorId: access.userId,
-                    text: parsedBody.data.text,
-                },
-            });
-            const { job } = await getJobStore().enqueue({
-                type: "agent.run.message",
-                runId: access.run.id,
-                payload: { eventSequence: event.sequence, text: parsedBody.data.text },
-            });
+            const result = await recordRunMessage(
+                access.run.id,
+                access.userId,
+                parsedBody.data.text,
+            );
 
             return res.status(201).json({
                 message: "Run message recorded successfully",
-                event,
-                jobId: job.id,
+                    ...result,
             });
         } catch (error) {
             return respondRunError(res, error);
         }
-    }
+    },
 );
 
 // -------------------------------------------------------------- cancel -----
@@ -505,41 +509,24 @@ router.post(
                 res,
                 req,
                 req.params.id as string,
-                "MODERATOR"
+                "MODERATOR",
             );
             if (!access.ok) return res;
 
-            const run = await cancelRun({
-                runId: access.run.id,
-                // The status this handler read: a run that a worker advanced (or
-                // that already reached a terminal state) in between cannot be
-                // cancelled out from under that owner.
-                expectedFrom: access.run.status,
-                actorId: access.userId,
-                reason: parsedBody.data.reason,
-            });
-
-            // Cancel work that has not started. RUNNING jobs stay with their
-            // fenced owner; the terminal run state + fencing tokens are what
-            // stop late results from publishing (CP2/CP5 invariant).
-            const store = getJobStore();
-            const jobs = await store.listByRun(access.run.id);
-            const cancelled: string[] = [];
-            for (const job of jobs) {
-                if (job.status !== "QUEUED") continue;
-                const result = await store.cancelQueued(job.id, nowIso());
-                if (result) cancelled.push(job.id);
-            }
-
+            const result = await requestRunCancellation(
+                access.run.id,
+                access.userId,
+                parsedBody.data.reason,
+            );
             return res.status(200).json({
                 message: "Run cancelled successfully",
-                run: shapeRun(run),
-                cancelledJobIds: cancelled,
+                run: shapeRun(result.run),
+                cancelledJobIds: result.cancelledJobIds,
             });
         } catch (error) {
             return respondRunError(res, error);
         }
-    }
+    },
 );
 
 // -------------------------------------------------------------- resume -----
@@ -553,62 +540,22 @@ router.post(
                 res,
                 req,
                 req.params.id as string,
-                "MODERATOR"
+                "MODERATOR",
             );
             if (!access.ok) return res;
-            if (isTerminalRunStatus(access.run.status)) {
-                return res.status(409).json({
-                    message: `Run is ${access.run.status}; terminal states cannot be resumed`,
-                    code: "TERMINAL_STATE",
-                    status: access.run.status,
-                });
-            }
-
-            const store = getJobStore();
-            const jobs = await store.listByRun(access.run.id);
-            const active = jobs.find(
-                (job) => job.status === "QUEUED" || job.status === "RUNNING"
+            const result = await scheduleRunResume(access.run.id,
+                access.userId,
             );
-            if (active) {
-                return res.status(200).json({
-                    message: "Run already has durable work scheduled",
-                    run: shapeRun(access.run),
-                    coalesced: true,
-                    jobId: active.id,
-                });
-            }
-
-            const { job } = await store.enqueue({
-                type: "agent.run.execute",
-                runId: access.run.id,
-                idempotencyKey: `run:${access.run.id}:resume`,
-                payload: {
-                    reason: "manual-resume",
-                    planVersion: access.run.planVersion,
-                },
-            });
-            await appendRunEvent({
-                runId: access.run.id,
-                type: "run.message",
-                issueId: access.run.issueId,
-                status: access.run.status,
-                data: {
-                    kind: "resume-requested",
-                    actorId: access.userId,
-                    jobId: job.id,
-                },
-            });
 
             return res.status(200).json({
-                message: "Run re-queued successfully",
-                run: shapeRun(access.run),
-                coalesced: false,
-                jobId: job.id,
+                message: "Run resume scheduled",
+                ...result,
+                run: shapeRun(result.run),
             });
         } catch (error) {
             return respondRunError(res, error);
         }
-    }
+    },
 );
 
 export default router;

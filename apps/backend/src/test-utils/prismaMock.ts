@@ -152,7 +152,7 @@ const createPrismaMock = () => {
                         users.find(
                             (u) =>
                                 u.email.toLowerCase() ===
-                                String(byEmail).toLowerCase()
+                                String(byEmail).toLowerCase(),
                         ) ?? null
                     );
                 }
@@ -184,14 +184,10 @@ const createPrismaMock = () => {
                 const byId = where?.id;
                 const bySlug = where?.slug;
                 if (byId) {
-                    return (
-                        organizations.find((o) => o.id === byId) ?? null
-                    );
+                    return organizations.find((o) => o.id === byId) ?? null;
                 }
                 if (bySlug) {
-                    return (
-                        organizations.find((o) => o.slug === bySlug) ?? null
-                    );
+                    return organizations.find((o) => o.slug === bySlug) ?? null;
                 }
                 return null;
             },
@@ -215,10 +211,10 @@ const createPrismaMock = () => {
                 const org = organizations.find((o) => o.id === where.id)!;
                 organizations = organizations.filter((o) => o.id !== where.id);
                 memberships = memberships.filter(
-                    (m) => m.organizationId !== where.id
+                    (m) => m.organizationId !== where.id,
                 );
                 invitations = invitations.filter(
-                    (i) => i.organizationId !== where.id
+                    (i) => i.organizationId !== where.id,
                 );
                 agents.deleteRunsForOrganization(where.id);
                 return org;
@@ -243,14 +239,14 @@ const createPrismaMock = () => {
                 let result = memberships.filter((m) =>
                     matchesWhere(m.organizationId, where?.organizationId) &&
                     matchesWhere(m.userId, where?.userId) &&
-                    matchesWhere(m.role, where?.role)
+                    matchesWhere(m.role, where?.role),
                 );
                 if (include?.organization) {
                     return result.map((m) => ({
                         ...m,
                         organization:
                             organizations.find(
-                                (o) => o.id === m.organizationId
+                                (o) => o.id === m.organizationId,
                             ) ?? null,
                     }));
                 }
@@ -267,7 +263,7 @@ const createPrismaMock = () => {
                     (m) =>
                         (where?.organizationId === undefined ||
                             m.organizationId === where.organizationId) &&
-                        (where?.role === undefined || m.role === where.role)
+                        (where?.role === undefined || m.role === where.role),
                 ).length,
             create: async ({ data }: { data: any }) => {
                 const membership: MockMembership = {
@@ -309,7 +305,7 @@ const createPrismaMock = () => {
                         ...invitation,
                         organization:
                             organizations.find(
-                                (o) => o.id === invitation.organizationId
+                                (o) => o.id === invitation.organizationId,
                             ) ?? null,
                     };
                 }
@@ -322,7 +318,7 @@ const createPrismaMock = () => {
                             i.organizationId === where.organizationId) &&
                         (where?.email === undefined ||
                             i.email.toLowerCase() ===
-                                String(where.email).toLowerCase())
+                                String(where.email).toLowerCase()),
                 ) ?? null,
             findMany: async ({
                 where,
@@ -335,14 +331,14 @@ const createPrismaMock = () => {
                     (i) =>
                         where?.email === undefined ||
                         i.email.toLowerCase() ===
-                            String(where.email).toLowerCase()
+                            String(where.email).toLowerCase(),
                 );
                 if (include?.organization) {
                     return result.map((i) => ({
                         ...i,
                         organization:
                             organizations.find(
-                                (o) => o.id === i.organizationId
+                                (o) => o.id === i.organizationId,
                             ) ?? null,
                     }));
                 }
@@ -373,7 +369,7 @@ const createPrismaMock = () => {
                 boards.filter(
                     (b) =>
                         where?.organizationId === undefined ||
-                        b.organizationId === where.organizationId
+                        b.organizationId === where.organizationId,
                 ),
             create: async ({ data }: { data: any }) => {
                 const board: MockBoard = {
@@ -404,7 +400,7 @@ const createPrismaMock = () => {
             findMany: async ({ where }: { where: any }) =>
                 sections.filter(
                     (s) =>
-                        where?.boardId === undefined || s.boardId === where.boardId
+                        where?.boardId === undefined || s.boardId === where.boardId,
                 ),
             create: async ({ data }: { data: any }) => {
                 const section: MockSection = {
@@ -449,7 +445,7 @@ const createPrismaMock = () => {
                 include?: any;
             }) => {
                 let result = issues.filter((i) =>
-                    matchesWhere(i.sectionId, where?.sectionId)
+                    matchesWhere(i.sectionId, where?.sectionId),
                 );
                 if (include?.assignees) {
                     result = result.map(withAssignees);
@@ -477,7 +473,7 @@ const createPrismaMock = () => {
                 Object.assign(issue, rest);
                 if (assignees?.set) {
                     issue.assigneeIds = assignees.set.map((a: any) =>
-                        typeof a === "string" ? a : a.id
+                        typeof a === "string" ? a : a.id,
                     );
                 }
                 return issue;
@@ -512,7 +508,7 @@ const createPrismaMock = () => {
                 include?: any;
             }) => {
                 let result = comments.filter((c) =>
-                    matchesWhere(c.issueId, where?.issueId)
+                    matchesWhere(c.issueId, where?.issueId),
                 );
                 if (include?.author) {
                     result = result.map(withAuthor);
@@ -588,7 +584,8 @@ const createPrismaMock = () => {
         $executeRawUnsafe: async (sql: string, ...values: unknown[]) =>
             queryRawRunLock(sql, values, agents).then((rows) => rows.length),
         $queryRaw: async (args: { sql?: string; values?: unknown[] }) =>
-            queryRawRunLock(String(args?.sql ?? ""), args?.values ?? [], agents),
+            queryRawRunLock(String(args?.sql ?? ""), args?.values ?? [], agents,
+            ),
     };
 
     return {
@@ -644,31 +641,33 @@ const projectRunLockRow = (run: Record<string, unknown>) =>
         RUN_LOCK_COLUMNS.filter((column) => column in run).map((column) => [
             column,
             run[column],
-        ])
+        ]),
     );
 
 const queryRawRunLock = (
     sql: string,
     values: readonly unknown[],
-    agents: any
+    agents: any,
 ): Promise<any[]> => {
     const statement = sql.replace(/\s+/g, " ").trim();
     const first = values[0];
+    if (statement.includes('FROM "AgentJob"'))
+        return Promise.resolve(agents.lockedJobRows(String(first)));
     if (statement.includes(LOCK_ISSUE_ADMISSION_MARKER)) {
         return Promise.resolve([]);
     }
     if (statement.includes(LOCK_ISSUE_SLOT_MARKER)) {
         return Promise.resolve(
-            agents.lockedRunRows(String(first)).map(projectRunLockRow)
+            agents.lockedRunRows(String(first)).map(projectRunLockRow),
         );
     }
     if (statement.includes(LOCK_RUN_ROW_MARKER)) {
         return Promise.resolve(
-            agents.lockedRunRows(undefined, String(first)).map(projectRunLockRow)
+            agents.lockedRunRows(undefined, String(first)).map(projectRunLockRow),
         );
     }
     throw new Error(
-        `prismaMock: unsupported raw statement: ${statement.slice(0, 160)}`
+        `prismaMock: unsupported raw statement: ${statement.slice(0, 160)}`,
     );
 };
 

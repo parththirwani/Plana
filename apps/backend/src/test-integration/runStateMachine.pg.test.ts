@@ -49,6 +49,8 @@ import { createRun, transitionRun } from "../runs/runRepository";
 const TEST_URL = process.env.PLANA_PG_TEST_URL ?? "";
 const enabled = TEST_URL.length > 0;
 const suite = enabled ? describe : describe.skip;
+const organizationIds: string[] = [];
+const userIds: string[] = [];
 
 /** Database name the live connection must report before anything is written. */
 const expectedDatabase = (): string => {
@@ -69,8 +71,13 @@ const codeOf = (error: unknown) => (error as { code?: string }).code;
 
 suite("run state machine against real Postgres", () => {
     beforeAll(async () => {
+        if (
+            TEST_URL !== process.env.DATABASE_URL ||
+            !new URL(TEST_URL).pathname.includes("_test")
+        )
+            throw new Error("Use identical disposable *_test URLs");
         const rows = await prisma.$queryRawUnsafe<{ database: string }[]>(
-            "SELECT current_database() AS database"
+            "SELECT current_database() AS database",
         );
         const actual = rows[0]?.database ?? "";
         const expected = expectedDatabase();
@@ -79,12 +86,16 @@ suite("run state machine against real Postgres", () => {
             // database is the failure mode this guard exists to prevent.
             throw new Error(
                 `Integration proofs connect to "${actual}" but PLANA_PG_TEST_URL names ` +
-                    `"${expected}". Set DATABASE_URL to the same scratch database.`
+                    `"${expected}". Set DATABASE_URL to the same scratch database.`,
             );
         }
     });
 
     afterAll(async () => {
+        await prisma.organization.deleteMany({
+            where: { id: { in: organizationIds } },
+        });
+        await prisma.user.deleteMany({ where: { id: { in: userIds } } });
         await prisma.$disconnect();
     });
 
@@ -105,6 +116,8 @@ suite("run state machine against real Postgres", () => {
                 name: "Runner",
             },
         });
+        organizationIds.push(organization.id);
+        userIds.push(user.id);
         const board = await prisma.board.create({
             data: { title: `Board ${tag}`, organizationId: organization.id },
         });
@@ -123,7 +136,7 @@ suite("run state machine against real Postgres", () => {
     const launch = async (
         seedData: Awaited<ReturnType<typeof seed>>,
         idempotencyKey: string,
-        onEnqueue?: (db: Prisma.TransactionClient) => Promise<void>
+        onEnqueue?: (db: Prisma.TransactionClient) => Promise<void>,
     ) =>
         createRun({
             issueId: seedData.issue.id,
@@ -146,6 +159,11 @@ suite("run state machine against real Postgres", () => {
             await db.agentJob.create({
                 data: {
                     type: "agent.run.execute",
+                    runId: (
+                        await db.agentRun.findUniqueOrThrow({
+                            where: { activeIssueId: seeded.issue.id },
+                        })
+                    ).id,
                     idempotencyKey: `job-${seeded.issue.id}`,
                 },
             });
@@ -162,32 +180,33 @@ suite("run state machine against real Postgres", () => {
         expect([a.created, b.created].filter(Boolean).length).toBe(1);
 
         expect(
-            await prisma.agentRun.count({ where: { issueId: seeded.issue.id } })
+            await prisma.agentRun.count({ where: { issueId: seeded.issue.id },
+            }),
         ).toBe(1);
         expect(
             await prisma.agentRun.count({
                 where: { activeIssueId: seeded.issue.id },
-            })
+            }),
         ).toBe(1);
         expect(
-            await prisma.runEvent.count({ where: { runId: a.run.id } })
+            await prisma.runEvent.count({ where: { runId: a.run.id } }),
         ).toBe(1);
         expect(
-            await prisma.runEvent.findFirst({ where: { runId: a.run.id } })
+            await prisma.runEvent.findFirst({ where: { runId: a.run.id } }),
         ).toMatchObject({ type: "run.created", sequence: 1 });
         // The issue is occupied: `activeIssueId` is the unique flag every
         // admission decision reads, and it is set by the same INSERT as the row.
         expect(
             await prisma.agentRun.count({
                 where: { activeIssueId: seeded.issue.id },
-            })
+            }),
         ).toBe(1);
         // The enqueue step is part of the launch, not a follow-up: it ran once.
         expect(steps).toBe(1);
         expect(
             await prisma.agentJob.count({
                 where: { idempotencyKey: `job-${seeded.issue.id}` },
-            })
+            }),
         ).toBe(1);
     });
 
@@ -203,12 +222,13 @@ suite("run state machine against real Postgres", () => {
         expect((error as Error).message).toContain("enqueue rejected");
 
         expect(
-            await prisma.agentRun.count({ where: { issueId: seeded.issue.id } })
+            await prisma.agentRun.count({ where: { issueId: seeded.issue.id },
+            }),
         ).toBe(0);
         expect(
             await prisma.agentRun.count({
                 where: { activeIssueId: seeded.issue.id },
-            })
+            }),
         ).toBe(0);
         // Nothing orphaned either. The `run.created` event (and, in a launch that
         // claims the issue, the occupancy flag) were written before the step threw,
@@ -219,12 +239,13 @@ suite("run state machine against real Postgres", () => {
         const retry = await launch(seeded, `retry-${crypto.randomUUID()}`);
         expect(retry.created).toBe(true);
         expect(
-            await prisma.agentRun.count({ where: { issueId: seeded.issue.id } })
+            await prisma.agentRun.count({ where: { issueId: seeded.issue.id },
+            }),
         ).toBe(1);
         expect(
             await prisma.agentRun.count({
                 where: { activeIssueId: seeded.issue.id },
-            })
+            }),
         ).toBe(1);
     });
 
@@ -242,11 +263,12 @@ suite("run state machine against real Postgres", () => {
         expect(fulfilled.length).toBe(1);
         expect(rejected.length).toBe(1);
         expect(codeOf((rejected[0] as PromiseRejectedResult).reason)).toBe(
-            "ACTIVE_RUN_EXISTS"
+            "ACTIVE_RUN_EXISTS",
         );
 
         expect(
-            await prisma.agentRun.count({ where: { issueId: seeded.issue.id } })
+            await prisma.agentRun.count({ where: { issueId: seeded.issue.id },
+            }),
         ).toBe(1);
     });
 
@@ -312,7 +334,7 @@ suite("run state machine against real Postgres", () => {
         // replayed safely after a crash).
         expect(
             (await prisma.agentRun.findUniqueOrThrow({ where: { id: run.id } }))
-                .status
+                .status,
         ).toBe("QUEUED");
 
         // A live lease is NOT stealable — that is the point of having one. The
@@ -326,7 +348,7 @@ suite("run state machine against real Postgres", () => {
                 machineId: `${machine}-b`,
                 leaseTtlMillis: 60_000,
                 expectedStatus: "QUEUED",
-            })
+            }),
         ).rejects.toThrow();
 
         const second = await claimRunLease(prisma, {
@@ -346,17 +368,17 @@ suite("run state machine against real Postgres", () => {
                 to: "PROVISIONING",
                 expectedFrom: "QUEUED",
                 claim: first satisfies RunOwnership,
-            })
+            }),
         );
         expect(codeOf(zombie)).toBe("STALE_CLAIM");
         expect(
             (await prisma.agentRun.findUniqueOrThrow({ where: { id: run.id } }))
-                .status
+                .status,
         ).toBe("QUEUED");
         expect(
             await prisma.runEvent.count({
                 where: { runId: run.id, type: "run.status.changed" },
-            })
+            }),
         ).toBe(0);
 
         // Renewal follows the same rule: the current token extends, the fenced
@@ -367,7 +389,7 @@ suite("run state machine against real Postgres", () => {
                 claim: first,
                 leaseTtlMillis: 60_000,
                 reason: "zombie heartbeat",
-            })
+            }),
         ).toBe(false);
         expect(
             await renewRunLease(prisma, {
@@ -375,7 +397,7 @@ suite("run state machine against real Postgres", () => {
                 claim: second,
                 leaseTtlMillis: 60_000,
                 reason: "still streaming",
-            })
+            }),
         ).toBe(true);
         const renewals = await prisma.runLeaseRenewal.findMany({
             where: { runId: run.id },
@@ -398,7 +420,7 @@ suite("run state machine against real Postgres", () => {
         expect(
             await prisma.runEvent.count({
                 where: { runId: run.id, type: "run.status.changed" },
-            })
+            }),
         ).toBe(1);
     });
 });
