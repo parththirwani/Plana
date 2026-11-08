@@ -1,6 +1,7 @@
 import { EngineError, type EngineAdapter, type EngineEvent, type Sandbox } from "../adapters/contract";
 import type { SandboxFactory } from "../adapters/fakeSandbox";
 import type { EngineAdapterRegistry } from "../adapters/registry";
+import { jsonRecord, type AgentRunRow } from "../runs/dbTypes";
 import { appendRunEvent } from "../runs/eventLog";
 import {
     failRun,
@@ -9,7 +10,7 @@ import {
     setRunPlanVersion,
     transitionRun,
 } from "../runs/runRepository";
-import { isTerminalRunStatus } from "../runs/status";
+import { isTerminalRunStatus, type RunStatus } from "../runs/status";
 import type { JobStore, JobRecord } from "../jobs/types";
 
 // Worker execution flows (CP5). All provider/sandbox interaction happens
@@ -46,7 +47,7 @@ export type WorkerContext = {
 export type JobClaim = { jobId: string; fencingToken: number };
 
 const emit = (
-    run: any,
+    run: AgentRunRow,
     type: Parameters<typeof appendRunEvent>[0]["type"],
     data: Record<string, unknown>
 ) =>
@@ -58,7 +59,11 @@ const emit = (
         data,
     });
 
-const transition = async (run: any, to: any, data: Record<string, unknown> = {}) => {
+const transition = async (
+    run: AgentRunRow,
+    to: RunStatus,
+    data: Record<string, unknown> = {}
+) => {
     const updated = await transitionRun({
         runId: run.id,
         to,
@@ -77,8 +82,8 @@ const leaseStillOurs = async (deps: WorkerDeps, claim: JobClaim): Promise<boolea
     );
 };
 
-const ensureSandbox = async (ctx: WorkerContext, run: any): Promise<{ sandbox: Sandbox; recreated: boolean }> => {
-    const baseCommit = (run.baseCommit as string | null) ?? `base-of-${run.id}`;
+const ensureSandbox = async (ctx: WorkerContext, run: AgentRunRow): Promise<{ sandbox: Sandbox; recreated: boolean }> => {
+    const baseCommit = run.baseCommit ?? `base-of-${run.id}`;
     const { sandbox, recreated } = await ctx.deps.sandboxes.connectOrRecreate(run.id, {
         repository: run.repository,
         baseCommit,
@@ -91,7 +96,7 @@ const ensureSandbox = async (ctx: WorkerContext, run: any): Promise<{ sandbox: S
 
 const startSession = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     sandbox: Sandbox
 ): Promise<RunSessionRef> => {
     const adapter = ctx.deps.registry.require(run.engine);
@@ -119,7 +124,7 @@ type StreamOutcome =
  *  engine stopped, sandbox cleaned, and NO publication intent recorded. */
 const streamSession = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     jobId: string,
     ref: RunSessionRef
 ): Promise<StreamOutcome> => {
@@ -159,7 +164,7 @@ const streamSession = async (
  *      zombied previous owner can never publish). */
 const publishTail = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     claim: JobClaim,
     ref: RunSessionRef
 ): Promise<string> => {
@@ -198,7 +203,7 @@ const publishTail = async (
 
 const pauseForApproval = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     ref: RunSessionRef,
     reason: string
 ): Promise<string> => {
@@ -229,7 +234,7 @@ const pauseForApproval = async (
 
 const freshFlow = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     jobId: string,
     claim: JobClaim
 ): Promise<string> => {
@@ -282,7 +287,7 @@ const streamedOutcome = (streamed: { reason: string; runStatus?: string }): stri
 
 const resumeApprovedFlow = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     jobId: string,
     claim: JobClaim,
     approved: { planVersion: number; baseCommit: string }
@@ -341,7 +346,7 @@ const resumeApprovedFlow = async (
  *  against the CURRENT base and request approval again. */
 const staleReplanFlow = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     jobId: string,
     details: Record<string, unknown>
 ): Promise<string> => {
@@ -375,7 +380,7 @@ const staleReplanFlow = async (
 /** REJECTED approval (or manual replan): regenerate, re-request approval. */
 const replanFlow = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     jobId: string,
     reason: string
 ): Promise<string> => {
@@ -393,7 +398,7 @@ const replanFlow = async (
 
 export const dispatchExecute = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     job: JobRecord,
     claim: JobClaim
 ): Promise<string> => {
@@ -437,7 +442,7 @@ export const dispatchExecute = async (
 
 export const dispatchMessage = async (
     ctx: WorkerContext,
-    run: any,
+    run: AgentRunRow,
     job: JobRecord
 ): Promise<string> => {
     const payload = (job.payload ?? {}) as Record<string, unknown>;

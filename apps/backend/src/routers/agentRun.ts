@@ -21,7 +21,7 @@ import {
     shapeRun,
 } from "../runs/runRepository";
 import { appendRunEvent, readRunEvents } from "../runs/eventLog";
-import { shapeRunEvent } from "../runs/events";
+import type { AgentRunRow } from "../runs/dbTypes";
 import { recordApproval } from "../runs/approvals";
 import { isTerminalRunStatus } from "../runs/status";
 import { runErrorFrom, type RunError } from "../runs/errors";
@@ -122,7 +122,7 @@ const requireRunAccess = async (
     req: AuthenticatedRequest,
     runId: string,
     minRole: "MEMBER" | "MODERATOR"
-): Promise<{ ok: true; userId: string; run: any } | { ok: false }> => {
+): Promise<{ ok: true; userId: string; run: AgentRunRow } | { ok: false }> => {
     if (!req.user) {
         unauthorized(res);
         return { ok: false };
@@ -476,7 +476,7 @@ router.post(
 
             return res.status(201).json({
                 message: "Run message recorded successfully",
-                event: shapeRunEvent(event),
+                event,
                 jobId: job.id,
             });
         } catch (error) {

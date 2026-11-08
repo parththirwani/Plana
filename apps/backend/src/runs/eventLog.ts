@@ -1,4 +1,5 @@
 import { prisma } from "@repo/db/db";
+import { toJsonInput } from "./dbTypes";
 import {
     DEFAULT_EVENT_PAGE_SIZE,
     MAX_EVENT_PAGE_SIZE,
@@ -16,7 +17,7 @@ import { withRunEventSection } from "./sections";
 const MAX_SEQUENCE_ATTEMPTS = 8;
 
 const isUniqueViolation = (error: unknown) =>
-    (error as any)?.code === "P2002";
+    (error as { code?: string } | null)?.code === "P2002";
 
 /**
  * Append-only event log for agent runs (CP3).
@@ -48,16 +49,18 @@ export type AppendRunEventInput = {
     silent?: boolean;
 };
 
+const STATE_CHANGED_EVENT_TYPES: readonly string[] = [
+    "run.created",
+    "run.status.changed",
+    "run.approval.requested",
+    "run.approval.decided",
+    "run.publication.intent",
+];
+
 const realtimeEventsFor = (
-    type: RunEventType
+    type: string
 ): { event: AgentRealtimeEvent; payload?: Record<string, unknown> }[] => {
-    const stateChanged = [
-        "run.created",
-        "run.status.changed",
-        "run.approval.requested",
-        "run.approval.decided",
-        "run.publication.intent",
-    ].includes(type);
+    const stateChanged = STATE_CHANGED_EVENT_TYPES.includes(type);
     return stateChanged
         ? [
               { event: "agent.run.updated" },
@@ -72,7 +75,7 @@ const notify = async (
 ): Promise<void> => {
     if (input.silent) return;
     const notifier = getRunEventPublisher();
-    for (const hint of realtimeEventsFor(event.type as any)) {
+    for (const hint of realtimeEventsFor(event.type)) {
         try {
             await notifier({
                 runId: event.runId,
@@ -101,14 +104,14 @@ const allocateAndPersist = async (
             orderBy: { sequence: "desc" },
             take: 1,
         });
-        const sequence = ((latest as any)?.sequence ?? 0) + 1;
+        const sequence = (latest?.sequence ?? 0) + 1;
         try {
             const created = await prisma.runEvent.create({
                 data: {
                     runId: input.runId,
                     sequence,
                     type: input.type,
-                    data: input.data ?? {},
+                    data: toJsonInput(input.data ?? {}),
                 },
             });
             return shapeRunEvent(created);
@@ -122,7 +125,7 @@ const allocateAndPersist = async (
     throw new RunError(
         "INTERNAL",
         `Could not allocate a monotonic run event sequence for ${input.runId}`,
-        { cause: (lastError as any)?.code ?? "UNKNOWN" }
+        { cause: (lastError as { code?: string } | null)?.code ?? "UNKNOWN" }
     );
 };
 
@@ -165,7 +168,7 @@ export const readRunEvents = async (input: {
         }),
     ]);
     const events = rows.map(shapeRunEvent);
-    const latestSequence = (latest as any)?.sequence ?? afterSequence;
+    const latestSequence = latest?.sequence ?? afterSequence;
     const nextSequence = events.length
         ? events[events.length - 1]!.sequence
         : afterSequence;
@@ -217,5 +220,5 @@ export const latestRunEventSequence = async (runId: string): Promise<number> => 
         orderBy: { sequence: "desc" },
         take: 1,
     });
-    return (latest as any)?.sequence ?? 0;
+    return latest?.sequence ?? 0;
 };

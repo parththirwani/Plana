@@ -6,6 +6,8 @@
 // clients always fetch the persisted events, which is what makes replay after a
 // reconnect exact (docs/plans/cloud-agents-architecture.md, "Realtime").
 
+import { jsonRecord, type RunEventRow } from "./dbTypes";
+
 export const RUN_EVENT_TYPES = [
     "run.created",
     "run.status.changed",
@@ -40,7 +42,7 @@ export type RunEventRecord = {
     sequence: number;
     type: RunEventType | string;
     data: Record<string, unknown>;
-    createdAt: string;
+    createdAt: Date | string;
 };
 
 export type EventPage = {
@@ -55,11 +57,11 @@ export type EventPage = {
 export const DEFAULT_EVENT_PAGE_SIZE = 50;
 export const MAX_EVENT_PAGE_SIZE = 200;
 
-export const shapeRunEvent = (event: any): RunEventRecord => ({
+export const shapeRunEvent = (event: RunEventRow): RunEventRecord => ({
     id: event.id,
     runId: event.runId,
     sequence: event.sequence,
     type: event.type,
-    data: (event.data ?? {}) as Record<string, unknown>,
+    data: jsonRecord(event.data),
     createdAt: event.createdAt,
 });

@@ -2,6 +2,15 @@ import { randomUUID } from "crypto";
 import { prisma } from "@repo/db/db";
 import { appendRunEvent } from "./eventLog";
 import { RunError } from "./errors";
+import {
+    jsonRecord,
+    toAgentEngine,
+    toRunExecutionMode,
+    toJsonInput,
+    type AgentEngine,
+    type AgentRunRow,
+    type RunExecutionMode,
+} from "./dbTypes";
 import { withRunSection } from "./sections";
 import {
     canTransitionRun,
@@ -27,34 +36,35 @@ import {
 // Nothing in this module talks to a queue, an engine or HTTP — CP4 handlers and
 // the CP5 worker build on top of it.
 
+/** Public API projection of an AgentRun row: same typed unions as the row,
+ *  minus worker-internal columns (owner / lease / fencing token). */
 export type AgentRunRecord = {
     id: string;
     issueId: string;
     organizationId: string;
     createdBy: string;
-    engine: string;
+    engine: AgentEngine;
     model: string;
     options: Record<string, unknown>;
-    executionMode: string;
+    executionMode: RunExecutionMode;
     repository: string;
     baseCommit: string | null;
     branchName: string;
     status: RunStatus;
-    activeIssueId: string | null;
     planVersion: number;
     idempotencyKey: string;
-    createdAt: string;
-    updatedAt: string;
+    createdAt: Date | string;
+    updatedAt: Date | string;
 };
 
-export const shapeRun = (run: any) => ({
+export const shapeRun = (run: AgentRunRow): AgentRunRecord => ({
     id: run.id,
     issueId: run.issueId,
     organizationId: run.organizationId,
     createdBy: run.createdBy,
     engine: run.engine,
     model: run.model,
-    options: run.options ?? {},
+    options: jsonRecord(run.options),
     executionMode: run.executionMode,
     repository: run.repository,
     baseCommit: run.baseCommit ?? null,
@@ -84,7 +94,7 @@ export type CreateRunInput = {
 };
 
 export type CreateRunResult = {
-    run: any;
+    run: AgentRunRow;
     created: boolean;
     /** Set when the caller's key replayed an existing run. */
     replayed?: boolean;
@@ -157,10 +167,14 @@ export const createRun = async (
                     issueId: input.issueId,
                     organizationId: input.organizationId,
                     createdBy: input.createdBy,
-                    engine: input.engine,
+                    // Domain strings cross into the DB only through the
+                    // typed boundary guards — never an `as`-cast.
+                    engine: toAgentEngine(input.engine),
                     model: input.model,
-                    options: input.options ?? {},
-                    executionMode: input.executionMode ?? "IMPLEMENT",
+                    options: toJsonInput(input.options ?? {}),
+                    executionMode: toRunExecutionMode(
+                        input.executionMode ?? "IMPLEMENT"
+                    ),
                     repository: input.repository,
                     baseCommit: input.baseCommit ?? null,
                     branchName: runBranchName(input.issueId, id),
@@ -237,7 +251,7 @@ export type TransitionInput = {
 export const transitionRun = async (input: TransitionInput) =>
     withRunSection(`run:${input.runId}`, async () => {
         const run = await requireRun(input.runId);
-        const from = run.status as RunStatus;
+        const from: RunStatus = run.status;
         if (!isRunStatus(input.to)) {
             throw new RunError("INVALID_INPUT", `Unknown run status: ${input.to}`, {
                 to: input.to,

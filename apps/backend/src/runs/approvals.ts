@@ -4,6 +4,7 @@ import { appendRunEvent } from "./eventLog";
 import { RunError } from "./errors";
 import { requireRun, transitionRun } from "./runRepository";
 import { isTerminalRunStatus } from "./status";
+import type { AgentRunRow, RunApprovalRow } from "./dbTypes";
 import type { JobRecord } from "../jobs/types";
 
 // Plan-approval service (CP4). An approval is only valid for the EXACT plan
@@ -26,8 +27,8 @@ export type RecordApprovalInput = {
 };
 
 export type RecordApprovalResult = {
-    approval: any;
-    run: any;
+    approval: RunApprovalRow;
+    run: AgentRunRow;
     job: JobRecord | null;
     /** True when this call replayed an identical earlier decision. */
     replayed: boolean;

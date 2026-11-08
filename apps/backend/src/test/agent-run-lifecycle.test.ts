@@ -7,6 +7,7 @@ import {
     mock,
 } from "bun:test";
 import { prismaMock } from "../test-utils/prismaMock";
+import type { RunStatus } from "../runs/status";
 import type {
     MockUser,
     MockOrg,
@@ -249,7 +250,9 @@ describe("run lifecycle state machine (CP3)", () => {
 
     test("every legal lifecycle transition is recorded and only terminal states release the active slot", async () => {
         const { run } = await launch();
-        const chain = [
+        // Typed against the RunStatus union: any status the transition table
+        // (or the schema enum) loses fails tsc, not a silent `as any`.
+        const chain: readonly RunStatus[] = [
             "PROVISIONING",
             "PLANNING",
             "AWAITING_APPROVAL",
@@ -259,7 +262,7 @@ describe("run lifecycle state machine (CP3)", () => {
             "PUBLISHING",
         ];
         for (const status of chain) {
-            const updated = await transitionRun({ runId: run.id, to: status as any });
+            const updated = await transitionRun({ runId: run.id, to: status });
             expect(updated.status).toBe(status);
             expect(updated.activeIssueId).toBe("iss_1");
             expect((await getActiveRunForIssue("iss_1"))?.id).toBe(run.id);
