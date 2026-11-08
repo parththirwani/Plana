@@ -306,3 +306,20 @@ export const failRun = async (input: {
         data: { error: input.error },
     });
 
+// Non-status bookkeeping writers (worker/CP5). Deliberately unable to touch
+// `status` / `activeIssueId`: lifecycle stays owned by transitionRun.
+
+/** Record the plan version an approval gate currently points at. */
+export const setRunPlanVersion = async (runId: string, planVersion: number) => {
+    const run = await requireRun(runId);
+    if (run.planVersion === planVersion) return run;
+    return prisma.agentRun.update({ where: { id: runId }, data: { planVersion } });
+};
+
+/** Pin the base commit observed at provision time (null -> first write). */
+export const pinRunBaseCommit = async (runId: string, baseCommit: string) => {
+    const run = await requireRun(runId);
+    if (run.baseCommit !== null && run.baseCommit !== undefined) return run;
+    return prisma.agentRun.update({ where: { id: runId }, data: { baseCommit } });
+};
+
