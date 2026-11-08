@@ -21,6 +21,8 @@ model User {
   memberships Membership[]
   comments    Comment[]
   assignedIssues Issue[]    @relation("IssueAssignees")
+  createdRuns AgentRun[]   @relation("RunCreatedBy")
+  runApprovals RunApproval[] @relation("ApprovalDecidedBy")
 
 }
 
@@ -36,6 +38,8 @@ model Organization {
   memberships Membership[]
   boards      Board[]
   invitations Invitation[]
+  agentConfig  OrganizationAgentConfig?
+  agentRuns    AgentRun[]
 }
 
 model Invitation {
@@ -75,6 +79,7 @@ model Board {
 
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   sections        Section[]
+  defaultRepository String?
 
   @@index([organizationId])
 }
@@ -107,6 +112,8 @@ model Issue {
   section     Section       @relation(fields: [sectionId], references: [id], onDelete: Cascade)
   comments    Comment[]
   assignees   User[]        @relation("IssueAssignees")
+  agentRuns   AgentRun[]
+  repository  String?
 
   @@index([sectionId])
 }
@@ -138,4 +145,115 @@ enum IssuePriority {
   MEDIUM
   HIGH
   URGENT
+}
+
+enum AgentEngine {
+  CODEX
+  CLAUDE_CODE
+  OPENCODE
+  PI
+}
+
+enum RunExecutionMode {
+  IMPLEMENT
+  PLAN_AND_APPROVE
+}
+
+enum RunStatus {
+  QUEUED
+  PROVISIONING
+  PLANNING
+  AWAITING_APPROVAL
+  IMPLEMENTING
+  VALIDATING
+  REVIEWING
+  PUBLISHING
+  COMPLETED
+  BLOCKED
+  LIMIT_REACHED
+  FAILED
+  CANCELLED
+}
+
+enum ApprovalDecision {
+  APPROVED
+  REJECTED
+}
+
+model OrganizationAgentConfig {
+  id                   String           @id @default(uuid())
+  organizationId       String           @unique
+  allowedRepositories  String[]
+  defaultEngine        AgentEngine?
+  defaultModel         String?
+  defaultExecutionMode RunExecutionMode @default(IMPLEMENT)
+  runBudgetUsd         Float            @default(5)
+  dailyOrgBudgetUsd    Float            @default(25)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  organization         Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model AgentRun {
+  id             String           @id @default(uuid())
+  issueId        String
+  organizationId String
+  createdBy      String
+  engine         AgentEngine
+  model          String
+  options        Json             @default("{}")
+  executionMode  RunExecutionMode @default(IMPLEMENT)
+  repository     String
+  baseCommit     String?
+  branchName     String
+  status         RunStatus        @default(QUEUED)
+  activeIssueId  String?          @unique
+  planVersion    Int              @default(0)
+  owner          String?
+  leaseExpiresAt DateTime?
+  fencingToken   Int              @default(0)
+  idempotencyKey String
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  issue           Issue          @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  organization    Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdByUser   User           @relation("RunCreatedBy", fields: [createdBy], references: [id], onDelete: Cascade)
+  events          RunEvent[]
+  approvals       RunApproval[]
+
+  @@unique([organizationId, idempotencyKey])
+  @@index([issueId])
+  @@index([organizationId, status])
+}
+
+model RunEvent {
+  id        String   @id @default(uuid())
+  runId     String
+  sequence  Int
+  type      String
+  data      Json
+  createdAt DateTime @default(now())
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, sequence])
+  @@index([runId])
+}
+
+model RunApproval {
+  id          String           @id @default(uuid())
+  runId       String
+  planVersion Int
+  decision    ApprovalDecision
+  baseCommit  String
+  decidedBy   String
+  decidedAt   DateTime         @default(now())
+
+  run           AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  decidedByUser User     @relation("ApprovalDecidedBy", fields: [decidedBy], references: [id], onDelete: Cascade)
+
+  @@unique([runId, planVersion])
+  @@index([runId])
 }

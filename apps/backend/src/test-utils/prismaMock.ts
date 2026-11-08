@@ -1,3 +1,18 @@
+import { createAgentFakes, matchesWhere } from "./prismaMockAgent";
+import type {
+    MockAgentRun,
+    MockRunApproval,
+    MockOrgAgentConfig,
+    MockRunEvent,
+} from "./prismaMockAgent";
+
+export type {
+    MockAgentRun,
+    MockRunApproval,
+    MockOrgAgentConfig,
+    MockRunEvent,
+};
+
 export type MockUser = {
     id: string;
     email: string;
@@ -34,6 +49,7 @@ export type MockBoard = {
     title: string;
     description: string | null;
     organizationId: string;
+    defaultRepository?: string | null;
 };
 
 export type MockSection = {
@@ -52,6 +68,7 @@ export type MockIssue = {
     dueDate: Date | string | null;
     sectionId: string;
     assigneeIds: string[];
+    repository?: string | null;
 };
 
 export type MockComment = {
@@ -72,6 +89,10 @@ export type MockSeed = {
     sections?: MockSection[];
     issues?: MockIssue[];
     comments?: MockComment[];
+    agentRuns?: MockAgentRun[];
+    runEvents?: MockRunEvent[];
+    runApprovals?: MockRunApproval[];
+    orgAgentConfigs?: MockOrgAgentConfig[];
 };
 
 const createPrismaMock = () => {
@@ -94,6 +115,7 @@ const createPrismaMock = () => {
             ...sections,
             ...issues,
             ...comments,
+            ...agents.allRows(),
         ].map((e: any) => e.id);
     const nextId = (prefix: string) => {
         let id: string;
@@ -103,13 +125,7 @@ const createPrismaMock = () => {
         return id;
     };
 
-    const matchesWhere = (value: unknown, clause: any) => {
-        if (clause === undefined) return true;
-        if (clause && typeof clause === "object" && "in" in clause) {
-            return (clause as any).in.includes(value);
-        }
-        return value === clause;
-    };
+    const agents = createAgentFakes(nextId);
 
     const withAssignees = (issue: MockIssue) => ({
         ...issue,
@@ -201,6 +217,7 @@ const createPrismaMock = () => {
                 invitations = invitations.filter(
                     (i) => i.organizationId !== where.id
                 );
+                agents.deleteRunsForOrganization(where.id);
                 return org;
             },
         },
@@ -361,6 +378,7 @@ const createPrismaMock = () => {
                     title: data.title,
                     description: data.description ?? null,
                     organizationId: data.organizationId,
+                    defaultRepository: data.defaultRepository ?? null,
                 };
                 boards.push(board);
                 return board;
@@ -445,6 +463,7 @@ const createPrismaMock = () => {
                     dueDate: data.dueDate ?? null,
                     sectionId: data.sectionId,
                     assigneeIds: [],
+                    repository: data.repository ?? null,
                 };
                 issues.push(issue);
                 return issue;
@@ -464,6 +483,7 @@ const createPrismaMock = () => {
                 const issue = issues.find((i) => i.id === where.id)!;
                 issues = issues.filter((i) => i.id !== where.id);
                 comments = comments.filter((c) => c.issueId !== where.id);
+                agents.deleteRunsForIssue(where.id);
                 return issue;
             },
         },
@@ -522,6 +542,10 @@ const createPrismaMock = () => {
                 return comment;
             },
         },
+        agentRun: agents.agentRun,
+        runEvent: agents.runEvent,
+        runApproval: agents.runApproval,
+        organizationAgentConfig: agents.organizationAgentConfig,
         $transaction: async (arg: any) =>
             Array.isArray(arg)
                 ? await Promise.all(arg.map((op: any) => op))
@@ -539,6 +563,7 @@ const createPrismaMock = () => {
             sections = seed.sections ?? [];
             issues = seed.issues ?? [];
             comments = seed.comments ?? [];
+            agents.resetAgentState(seed);
             idSeq = 0;
         },
     };
