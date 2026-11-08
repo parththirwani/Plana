@@ -29,13 +29,42 @@ const prisma = prismaMock.prisma;
 
 const {
     createRun,
-    transitionRun,
-    cancelRun,
+    transitionRun: transitionRunGuarded,
+    cancelRun: cancelRunGuarded,
     requireRun,
+    getRunById,
     getActiveRunForIssue,
     listRunsForIssue,
     runBranchName,
 } = await import("../runs/runRepository");
+
+// The run layer REQUIRES every status write to name the status its caller read
+// (`expectedFrom`): a mutation that cannot say which state it is moving FROM may
+// not overwrite the row. These tests drive the state machine directly, so they
+// read the row here — the same read-then-write the HTTP handlers perform — and
+// hand it to the guard rather than weakening the guard.
+/** Read the status to name in the guard. A row that does not exist gets a
+ *  stand-in so the repository still answers NOT_FOUND (the guard must never be
+ *  the thing that invents a different error for a missing run). */
+const statusOf = async (runId: string): Promise<RunStatus> =>
+    (await getRunById(runId))?.status ?? "QUEUED";
+
+type TransitionArgs = Parameters<typeof transitionRunGuarded>[0];
+const transitionRun = async (
+    input: Omit<TransitionArgs, "expectedFrom"> & {
+        expectedFrom?: TransitionArgs["expectedFrom"];
+    }
+) =>
+    transitionRunGuarded({
+        ...input,
+        expectedFrom: input.expectedFrom ?? (await statusOf(input.runId)),
+    } as TransitionArgs);
+
+const cancelRun = async (input: {
+    runId: string;
+    actorId?: string | null;
+    reason?: string;
+}) => cancelRunGuarded({ ...input, expectedFrom: await statusOf(input.runId) });
 const {
     appendRunEvent,
     readRunEvents,

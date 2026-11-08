@@ -5,7 +5,10 @@ import type { EngineAdapterRegistry } from "../adapters/registry";
 import { createFakeOnlyRegistry } from "../adapters/registry";
 import { getJobStore } from "../jobs/jobStore";
 import type { JobStore } from "../jobs/types";
-import { getRunById } from "../runs/runRepository";
+import { claimRunLease, getRunById } from "../runs/runRepository";
+import { prisma } from "@repo/db/db";
+import { DEFAULT_LEASE_MS } from "../jobs/types";
+import type { AgentRunRow } from "../runs/dbTypes";
 import { isTerminalRunStatus } from "../runs/status";
 import {
     dispatchExecute,
@@ -50,6 +53,9 @@ export type RunWorkerOptions = {
     owner?: string;
     now?: () => string;
     afterEvent?: WorkerDeps["afterEvent"];
+    /** Run-lease lifetime for one attempt. Long streams must renew it (see
+     *  `renewRunLease`); a short value makes reclaim-after-stall cheap. */
+    leaseMs?: number;
 };
 
 export const createRunWorker = (options: RunWorkerOptions = {}) => {
@@ -65,6 +71,27 @@ export const createRunWorker = (options: RunWorkerOptions = {}) => {
         ...(options.afterEvent ? { afterEvent: options.afterEvent } : {}),
     };
     const ctx: WorkerContext = { deps, sessions: new Map() };
+    /**
+     * ACQUIRE THE RUN LEASE for one attempt.
+     *
+     * The queue claim only proves this worker holds the JOB; the run needs its
+     * own single-writer lease, or every guarded transition would carry a fencing
+     * token the row has never heard of. `claimRunLease` stamps
+     * `owner`/`lease_expires_at` and raises `fencing_token` monotonically — it
+     * changes NO status — so a reclaim by another live process fences this worker
+     * out at its very next guarded write. That is the mechanism that stops a
+     * zombie from moving a cancelled run or publishing through it: the queue's job
+     * lease alone was never enough, because it says nothing about who may write
+     * THIS run.
+     */
+    const bindOwnership = async (run: AgentRunRow) => {
+        ctx.ownership = await claimRunLease(prisma, {
+            runId: run.id,
+            machineId: deps.owner,
+            leaseTtlMillis: options.leaseMs ?? DEFAULT_LEASE_MS,
+            expectedStatus: run.status,
+        });
+    };
 
     /** Claim and fully process one job; null when the queue is empty. */
     const runOnce = async (): Promise<WorkerOutcome | null> => {
@@ -93,13 +120,18 @@ export const createRunWorker = (options: RunWorkerOptions = {}) => {
                     // finished run, never publish through it. The job itself
                     // completes as a no-op.
                     status = `ignored-terminal-run:${run.status}`;
-                } else if (job.type === "agent.run.message") {
-                    status = await dispatchMessage(ctx, run, job);
                 } else {
-                    status = await dispatchExecute(ctx, run, job, {
-                        jobId: job.id,
-                        fencingToken,
-                    });
+                    // Own the run BEFORE the first write; a live owner elsewhere
+                    // raises STALE_CLAIM and the job is retried (never guessed).
+                    await bindOwnership(run);
+                    if (job.type === "agent.run.message") {
+                        status = await dispatchMessage(ctx, run, job);
+                    } else {
+                        status = await dispatchExecute(ctx, run, job, {
+                            jobId: job.id,
+                            fencingToken,
+                        });
+                    }
                 }
             }
         } catch (err) {

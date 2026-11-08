@@ -18,6 +18,9 @@ export const RUN_EVENT_TYPES = [
     "run.engine.output",
     "run.sandbox.lifecycle",
     "run.publication.intent",
+    "run.attempt.started",
+    "run.plan.updated",
+    "run.base.pinned",
     "run.error",
 ] as const;
 

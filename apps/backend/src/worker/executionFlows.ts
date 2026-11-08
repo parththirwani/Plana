@@ -1,7 +1,8 @@
 import { EngineError, type EngineAdapter, type EngineEvent, type Sandbox } from "../adapters/contract";
 import type { SandboxFactory } from "../adapters/fakeSandbox";
 import type { EngineAdapterRegistry } from "../adapters/registry";
-import { jsonRecord, type AgentRunRow } from "../runs/dbTypes";
+import { jsonRecord, type AgentRunRow, type RunCommitPatch } from "../runs/dbTypes";
+import type { RunOwnership } from "../runs/runRepository";
 import { appendRunEvent } from "../runs/eventLog";
 import {
     failRun,
@@ -42,6 +43,14 @@ export type RunSessionRef = {
 export type WorkerContext = {
     deps: WorkerDeps;
     sessions: Map<string, RunSessionRef>;
+    /**
+     * THE WORKER'S IDENTITY FOR THE CURRENT ATTEMPT: the queue owner plus the
+     * fencing token its claim returned. `runWorker` refreshes it on every claim.
+     * Every run mutation carries it, so a worker whose lease expired — or whose
+     * job was reclaimed by another process — is fenced out by the data layer
+     * instead of overwriting a newer owner's state.
+     */
+    ownership?: RunOwnership;
 };
 
 export type JobClaim = { jobId: string; fencingToken: number };
@@ -59,15 +68,29 @@ const emit = (
         data,
     });
 
+/**
+ * The worker's only way to move a run.
+ *
+ * `expectedFrom` is the status THIS worker read, and `ownership` is the lease +
+ * fencing token its claim returned — both are mandatory here. A worker whose
+ * lease expired mid-step, or whose sibling already cancelled the run, gets a
+ * rejected transition (and its durable side effects roll back) instead of
+ * overwriting the state it never read.
+ */
 const transition = async (
+    ctx: WorkerContext,
     run: AgentRunRow,
     to: RunStatus,
-    data: Record<string, unknown> = {}
+    data: Record<string, unknown> = {},
+    commit?: RunCommitPatch
 ) => {
     const updated = await transitionRun({
         runId: run.id,
         to,
+        expectedFrom: run.status,
+        claim: ctx.ownership,
         data: { via: "worker", ...data },
+        ...(commit ? { commit } : {}),
     });
     return updated;
 };
@@ -89,7 +112,7 @@ const ensureSandbox = async (ctx: WorkerContext, run: AgentRunRow): Promise<{ sa
         baseCommit,
     });
     if (run.baseCommit === null || run.baseCommit === undefined) {
-        await pinRunBaseCommit(run.id, sandbox.baseCommit);
+        await pinRunBaseCommit(run.id, sandbox.baseCommit, ctx.ownership);
     }
     return { sandbox, recreated };
 };
@@ -168,8 +191,8 @@ const publishTail = async (
     claim: JobClaim,
     ref: RunSessionRef
 ): Promise<string> => {
-    let current = await transition(run, "VALIDATING", { stage: "validation" });
-    current = await transition(current, "REVIEWING", { stage: "review" });
+    let current = await transition(ctx, run, "VALIDATING", { stage: "validation" });
+    current = await transition(ctx, current, "REVIEWING", { stage: "review" });
 
     const fresh = await getRunById(run.id);
     if (!fresh || isTerminalRunStatus(fresh.status)) {
@@ -182,7 +205,7 @@ const publishTail = async (
         return "aborted-lost-lease";
     }
 
-    current = await transition(fresh, "PUBLISHING", { stage: "publish" });
+    current = await transition(ctx, fresh, "PUBLISHING", { stage: "publish" });
     const completed = (ref.completedData ?? {}) as Record<string, unknown>;
     await emit(current, "run.publication.intent", {
         kind: "INTENT",
@@ -196,7 +219,7 @@ const publishTail = async (
         githubContacted: false,
         publication: "intent-only",
     });
-    await transition(current, "COMPLETED", { stage: "completed" });
+    await transition(ctx, current, "COMPLETED", { stage: "completed" });
     await ref.sandbox.kill();
     return "completed";
 };
@@ -208,8 +231,8 @@ const pauseForApproval = async (
     reason: string
 ): Promise<string> => {
     const pause = await ref.adapter.pauseForApproval(ref.sessionId);
-    await setRunPlanVersion(run.id, pause.planVersion);
-    const updated = await transition(run, "AWAITING_APPROVAL", {
+    await setRunPlanVersion(run.id, pause.planVersion, ctx.ownership);
+    const updated = await transition(ctx, run, "AWAITING_APPROVAL", {
         stage: "plan-ready",
         planVersion: pause.planVersion,
     });
@@ -250,13 +273,28 @@ const freshFlow = async (
                 detail: error.message,
                 substituted: false,
             });
-            await failRun({ runId: run.id, error: `engine '${run.engine}' unavailable: ${error.message}` });
+            await failRun({
+                runId: run.id,
+                expectedFrom: run.status,
+                claim: ctx.ownership,
+                error: `engine '${run.engine}' unavailable: ${error.message}`,
+            });
             return "failed-unsupported-engine";
         }
         throw error;
     }
 
-    let current = await transition(run, "PROVISIONING", { stage: "provision" });
+    // THE FINALIZE STEP. QUEUED -> PROVISIONING and the durable first-attempt
+    // stamp go in ONE statement: `status != QUEUED && attemptedAt == null` can
+    // therefore only ever mean "the claim died before it durably recorded its
+    // start", which is exactly the state CP-D resumes from instead of replaying.
+    let current = await transition(
+        ctx,
+        run,
+        "PROVISIONING",
+        { stage: "provision" },
+        { attemptedAt: new Date() }
+    );
     const { sandbox, recreated } = await ensureSandbox(ctx, current);
     await emit(current, "run.sandbox.lifecycle", {
         phase: recreated ? "recreated" : "provisioned",
@@ -268,13 +306,13 @@ const freshFlow = async (
     const mode = current.executionMode;
 
     if (mode === "PLAN_AND_APPROVE") {
-        current = await transition(current, "PLANNING", { stage: "plan" });
+        current = await transition(ctx, current, "PLANNING", { stage: "plan" });
         const streamed = await streamSession(ctx, current, jobId, ref);
         if (streamed.cancelled) return streamedOutcome(streamed);
         return pauseForApproval(ctx, current, ref, "initial");
     }
 
-    current = await transition(current, "IMPLEMENTING", { stage: "implement" });
+    current = await transition(ctx, current, "IMPLEMENTING", { stage: "implement" });
     const streamed = await streamSession(ctx, current, jobId, ref);
     if (streamed.cancelled) return streamedOutcome(streamed);
     return publishTail(ctx, current, claim, ref);
@@ -358,11 +396,11 @@ const staleReplanFlow = async (
         action: "plan-regeneration-required",
         ...details,
     });
-    let current = await transition(run, "AWAITING_APPROVAL", {
+    let current = await transition(ctx, run, "AWAITING_APPROVAL", {
         stage: "approval-stale",
         reason: "base-commit-or-plan-changed-since-approval",
     });
-    current = await transition(current, "PLANNING", { stage: "re-plan" });
+    current = await transition(ctx, current, "PLANNING", { stage: "re-plan" });
 
     const { sandbox } = await ensureSandbox(ctx, current);
     ref.sandbox = sandbox;

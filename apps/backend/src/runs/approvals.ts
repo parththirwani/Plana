@@ -157,6 +157,10 @@ export const recordApproval = async (
             ? await transitionRun({
                   runId: run.id,
                   to: input.decision === "APPROVED" ? "IMPLEMENTING" : "PLANNING",
+                  // The status THIS handler read above: if a worker or another
+                  // approval moved the run in between, the decision is rejected
+                  // instead of stomping the newer state.
+                  expectedFrom: run.status,
                   actorId: input.decidedBy,
                   data: {
                       via: "approval",

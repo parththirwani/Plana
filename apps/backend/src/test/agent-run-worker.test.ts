@@ -37,7 +37,24 @@ import { DEFAULT_REPO_FILES } from "../adapters/fakeSandbox";
 
 mock.module("@repo/db/db", () => ({ prisma: prismaMock.prisma }));
 
-const { createRun, cancelRun, getRunById } = await import("../runs/runRepository");
+const {
+    createRun,
+    cancelRun: cancelRunGuarded,
+    getRunById,
+} = await import("../runs/runRepository");
+
+// Cancellation must name the status its caller read (see the run repository's
+// `expectedFrom` guard). This test's mid-flight hook reads the row it is
+// cancelling from, exactly like the HTTP handler does.
+const cancelRun = async (input: {
+    runId: string;
+    actorId?: string | null;
+    reason?: string;
+}) =>
+    cancelRunGuarded({
+        ...input,
+        expectedFrom: (await getRunById(input.runId))!.status,
+    });
 const { appendRunEvent } = await import("../runs/eventLog");
 const { recordApproval } = await import("../runs/approvals");
 const { setRunEventPublisher } = await import("../runs/realtime");

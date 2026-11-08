@@ -221,6 +221,11 @@ model AgentRun {
   owner          String?
   leaseExpiresAt DateTime?
   fencingToken   Int              @default(0)
+  /// Instant of the first execution attempt (set when a claim finalizes the
+  /// run start). `status != QUEUED && attemptedAt == null` therefore means
+  /// "transitioned by a claim that died before it durably recorded its start"
+  /// — a retry must RESUME the persisted step instead of replaying provisioning.
+  attemptedAt    DateTime?        @map("attempted_at")
   idempotencyKey String
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
@@ -231,10 +236,32 @@ model AgentRun {
   events          RunEvent[]
   approvals       RunApproval[]
   jobs            AgentJob[]
+  leaseRenewals   RunLeaseRenewal[]
 
   @@unique([organizationId, idempotencyKey])
   @@index([issueId])
   @@index([organizationId, status])
+  @@index([status, leaseExpiresAt])
+}
+
+
+/// Audit trail of run-lease renewals. Every accepted `renewRunLease` writes one
+/// row inside the same transaction that bumps `fencing_token`, so a renewal —
+/// or the fact that a zombie worker's stale token was rejected — can be
+/// reconstructed later from the database alone.
+model RunLeaseRenewal {
+  id             String   @id @default(uuid())
+  runId          String   @map("run_id")
+  machineId      String   @map("machine_id")
+  fencingToken   Int      @map("fencing_token")
+  leaseExpiresAt DateTime @map("lease_expires_at")
+  reason         String
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  run            AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, createdAt])
+  @@map("run_lease_renewals")
 }
 
 model AgentJob {
@@ -290,3 +317,5 @@ model RunApproval {
   @@unique([runId, planVersion])
   @@index([runId])
 }
+
+

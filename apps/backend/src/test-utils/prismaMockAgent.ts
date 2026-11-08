@@ -14,6 +14,10 @@ export type MockAgentRun = {
     branchName: string;
     status: string;
     activeIssueId: string | null;
+    /// Instant the worker first started executing (CP-D resume detection).
+    /// Optional so pre-existing seeds keep compiling — the fake defaults it to
+    /// null, which is exactly what the column means for a never-started run.
+    attemptedAt?: string | null;
     planVersion: number;
     owner: string | null;
     leaseExpiresAt: Date | string | null;
@@ -134,12 +138,56 @@ export const applyPage = (rows: any[], skip?: number, take?: number) => {
     return result;
 };
 
+export type MockActiveSlot = {
+    issueId: string;
+    organizationId: string;
+    runId: string;
+    acquiredAt: string;
+};
+
+export type MockLeaseRenewal = {
+    id: string;
+    runId: string;
+    machineId: string;
+    fencingToken: number;
+    leaseExpiresAt: string;
+    reason: string;
+    createdAt: string;
+};
+
 export const createAgentFakes = (nextId: (prefix: string) => string) => {
     let agentRuns: MockAgentRun[] = [];
     let runEvents: MockRunEvent[] = [];
     let runApprovals: MockRunApproval[] = [];
     let orgAgentConfigs: MockOrgAgentConfig[] = [];
     let agentJobs: MockAgentJob[] = [];
+    let activeSlots: MockActiveSlot[] = [];
+    let leaseRenewals: MockLeaseRenewal[] = [];
+
+    /** Full agent-state snapshot. The state machine runs every mutation in one
+     *  interactive `$transaction`, and the mock MUST share that semantics: a
+     *  rolled-back launch has to leave no run row, no event and no slot, or the
+     *  mock would silently bless exactly the stranded-active-run bug the real
+     *  implementation is designed to prevent. */
+    const snapshotAgentState = () => ({
+        agentRuns: agentRuns.map((r) => ({ ...r })),
+        runEvents: runEvents.map((e) => ({ ...e })),
+        runApprovals: runApprovals.map((a) => ({ ...a })),
+        orgAgentConfigs: orgAgentConfigs.map((c) => ({ ...c })),
+        agentJobs: agentJobs.map((j) => ({ ...j })),
+        activeSlots: activeSlots.map((s) => ({ ...s })),
+        leaseRenewals: leaseRenewals.map((r) => ({ ...r })),
+    });
+
+    const restoreAgentState = (state: ReturnType<typeof snapshotAgentState>) => {
+        agentRuns = state.agentRuns.map((r) => ({ ...r }));
+        runEvents = state.runEvents.map((e) => ({ ...e }));
+        runApprovals = state.runApprovals.map((a) => ({ ...a }));
+        orgAgentConfigs = state.orgAgentConfigs.map((c) => ({ ...c }));
+        agentJobs = state.agentJobs.map((j) => ({ ...j }));
+        activeSlots = state.activeSlots.map((s) => ({ ...s }));
+        leaseRenewals = state.leaseRenewals.map((r) => ({ ...r }));
+    };
 
     const matchAgentRun = (run: MockAgentRun, where: any) =>
         (where?.id === undefined || run.id === where.id) &&
@@ -151,8 +199,26 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
         matchesWhere(run.idempotencyKey, where?.idempotencyKey) &&
         (where?.activeIssueId === undefined ||
             run.activeIssueId === where.activeIssueId) &&
-        (where?.owner === undefined || run.owner === where.owner);
+        (where?.owner === undefined || run.owner === where.owner) &&
+        // `OR` over partial clauses: the lease claim admits "already mine",
+        // "nobody's" or "expired", and at least one branch must match. Without
+        // this the mock would silently reject every claim that a real
+        // Postgres accepts, and the lease tests would prove nothing.
+        (where?.OR === undefined ||
+            (Array.isArray(where.OR) &&
+                where.OR.some((branch: any) => matchAgentRun(run, branch)))) &&
+        (where?.AND === undefined ||
+            (Array.isArray(where.AND) &&
+                where.AND.every((branch: any) => matchAgentRun(run, branch))));
 
+    /**
+     * UNIQUE-index parity for AgentRun. `activeIssueId` (one active run per
+     * issue) was already enforced here; `(organizationId, idempotencyKey)` is the
+     * other Postgres unique index the launch path depends on: with a mock that
+     * silently allowed a duplicate key, two concurrent launches would both
+     * "succeed" and the atomic-replay behaviour the mock is supposed to model
+     * would never be exercised.
+     */
     const assertAgentRunUnique = (candidate: any, excludeId?: string) => {
         if (
             candidate.activeIssueId !== undefined &&
@@ -294,7 +360,47 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
         },
     };
 
-    const agentRun = {
+/** Resolve a Prisma numeric field update (`{ increment / decrement / set }`)
+ *  against the value the row currently holds. Lease claims raise the fencing
+ *  token with `increment`, which is only correct relative to that row. */
+const resolveNumericUpdate = (current: unknown, update: any): unknown => {
+    if (update !== null && typeof update === "object" && !Array.isArray(update)) {
+        if ("increment" in update)
+            return Number(current ?? 0) + Number(update.increment);
+        if ("decrement" in update)
+            return Number(current ?? 0) - Number(update.decrement);
+        if ("multiply" in update)
+            return Number(current ?? 0) * Number(update.multiply);
+        if ("set" in update && Object.keys(update).length === 1) return update.set;
+    }
+    return update;
+};
+
+/** Column names whose stored form must be an ISO string, so `matchesWhere`
+ *  compares like with like (the state machine writes ISO strings). */
+const ISO_COLUMNS = new Set(["leaseExpiresAt", "attemptedAt"]);
+
+const isoColumn = (key: string, value: unknown) =>
+    ISO_COLUMNS.has(key) && value instanceof Date ? value.toISOString() : value;
+
+const iso = (value: unknown): string | null =>
+    value === null || value === undefined
+        ? null
+        : value instanceof Date
+          ? value.toISOString()
+          : String(value);
+
+const applyRunFields = (target: Record<string, any>, data: Record<string, any>) => {
+    for (const [key, value] of Object.entries(data)) {
+        target[key] = isoColumn(
+            key,
+            resolveNumericUpdate(target[key], value)
+        );
+    }
+    return target;
+};
+
+const agentRun = {
         findUnique: async ({ where }: { where: any }) => {
             if (where?.id) {
                 return agentRuns.find((r) => r.id === where.id) ?? null;
@@ -317,6 +423,11 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
                 );
             }
             return null;
+        },
+        findUniqueOrThrow: async (args: { where: any }) => {
+            const found = await agentRun.findUnique(args);
+            if (!found) throw new Error(`agentRun not found: ${JSON.stringify(args.where)}`);
+            return found;
         },
         findFirst: async ({ where }: { where: any }) =>
             agentRuns.find((r) => matchAgentRun(r, where)) ?? null,
@@ -358,6 +469,7 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
                 branchName: data.branchName,
                 status: data.status ?? "QUEUED",
                 activeIssueId: data.activeIssueId ?? null,
+                attemptedAt: data.attemptedAt ?? null,
                 planVersion: data.planVersion ?? 0,
                 owner: data.owner ?? null,
                 leaseExpiresAt: data.leaseExpiresAt ?? null,
@@ -370,13 +482,27 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
             return run;
         },
         update: async ({ where, data }: { where: any; data: any }) => {
-            const run = agentRuns.find((r) => r.id === where.id)!;
+            const run = agentRuns.find((r) => matchAgentRun(r, where))!;
             const merged = { ...run, ...data };
             assertAgentRunUnique(merged, run.id);
-            Object.assign(run, data, {
-                updatedAt: new Date().toISOString(),
-            });
-            return run;
+            applyRunFields(run, { ...data, updatedAt: new Date().toISOString() });
+            return { ...run };
+        },
+        /** CONDITIONAL write — the shape the run state machine's guard uses
+         *  (`where: { id, status }`). The count is the guard's answer: a status
+         *  that moved underneath the caller matches zero rows, so a stale write
+         *  changes nothing instead of overwriting the newer state. `{ increment }`
+         *  and ISO columns go through the same applier as `update`. */
+        updateMany: async ({ where, data }: { where: any; data: any }) => {
+            const matches = agentRuns.filter((r) => matchAgentRun(r, where));
+            for (const run of matches) {
+                assertAgentRunUnique({ ...run, ...data }, run.id);
+                applyRunFields(run, {
+                    ...data,
+                    updatedAt: new Date().toISOString(),
+                });
+            }
+            return { count: matches.length, updated: matches.map((r) => ({ ...r })) };
         },
         delete: async ({ where }: { where: any }) => {
             const run = agentRuns.find((r) => r.id === where.id)!;
@@ -431,6 +557,39 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
             };
             runEvents.push(event);
             return event;
+        },
+        /** Bulk append: the transactional event writer persists a status change
+         *  and its companion events with ONE createMany, so the whole audit
+         *  trail of a transition is a single atomic write (and a rolled-back
+         *  transition leaves none of them behind). */
+        createMany: async ({
+            data,
+            skipDuplicates,
+        }: {
+            data: any;
+            skipDuplicates?: boolean;
+        }) => {
+            const rows = Array.isArray(data) ? data : [data];
+            let count = 0;
+            for (const row of rows) {
+                const clash = runEvents.some(
+                    (e) => e.runId === row.runId && e.sequence === row.sequence
+                );
+                if (clash) {
+                    if (skipDuplicates) continue;
+                    throw uniqueViolation("runId, sequence");
+                }
+                runEvents.push({
+                    id: row.id ?? nextId("evt"),
+                    runId: row.runId,
+                    sequence: row.sequence,
+                    type: row.type,
+                    data: row.data ?? {},
+                    createdAt: row.createdAt ?? new Date().toISOString(),
+                });
+                count += 1;
+            }
+            return { count };
         },
     };
 
@@ -600,12 +759,57 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
         },
     };
 
+    /** Per-issue admission ticket. PRIMARY KEY(issueId) plus the UNIQUE(runId)
+     *  the schema declares; the launch path inserts here and a duplicate is the
+     *  DB-level backstop for "one active run per issue". */
+
+    const runLeaseRenewal = {
+        create: async ({ data }: { data: any }) => {
+            const renewal: MockLeaseRenewal = {
+                id: data.id ?? nextId("lrn"),
+                runId: data.runId,
+                machineId: data.machineId,
+                fencingToken: data.fencingToken,
+                leaseExpiresAt: iso(data.leaseExpiresAt) ?? "",
+                reason: data.reason ?? "",
+                createdAt: new Date().toISOString(),
+            };
+            leaseRenewals.push(renewal);
+            return { ...renewal };
+        },
+        findMany: async ({ where }: { where?: any } = {}) =>
+            leaseRenewals.filter(
+                (r) =>
+                    (where?.runId === undefined || r.runId === where.runId) &&
+                    (where?.machineId === undefined || r.machineId === where.machineId)
+            ),
+        count: async ({ where }: { where?: any } = {}) =>
+            leaseRenewals.filter(
+                (r) => where?.runId === undefined || r.runId === where.runId
+            ).length,
+    };
+
     return {
         agentRun,
         runEvent,
         runApproval,
         organizationAgentConfig,
         agentJob,
+        runLeaseRenewal,
+        snapshotAgentState,
+        restoreAgentState,
+        /** The rows a `SELECT … FOR UPDATE` lock statement would return. The
+         *  mock cannot block, but it can hand back the identical projection, so
+         *  the state machine's lock path runs the same code here as against a
+         *  live Postgres. */
+        lockedRunRows: (issueId?: string, runId?: string) =>
+            agentRuns
+                .filter(
+                    (r) =>
+                        (issueId === undefined || r.activeIssueId === issueId) &&
+                        (runId === undefined || r.id === runId)
+                )
+                .map((r) => ({ ...r })),
         allRows: () => [
             ...agentRuns,
             ...runEvents,
@@ -619,6 +823,8 @@ export const createAgentFakes = (nextId: (prefix: string) => string) => {
             runApprovals = seed.runApprovals ?? [];
             orgAgentConfigs = seed.orgAgentConfigs ?? [];
             agentJobs = seed.agentJobs ?? [];
+            activeSlots = (seed as any).activeSlots ?? [];
+            leaseRenewals = (seed as any).leaseRenewals ?? [];
         },
         deleteRunsForIssue: (issueId: string) => {
             const runIds = agentRuns

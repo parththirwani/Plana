@@ -19,11 +19,13 @@
 
 import type { $Enums, Prisma } from "@repo/db/db";
 import { RunError } from "./errors";
-import { RUN_STATUSES, type RunStatus } from "./status";
+import { RUN_STATUSES, isRunStatus, type RunStatus } from "./status";
 
 export type AgentEngine = $Enums.AgentEngine;
 export type RunExecutionMode = $Enums.RunExecutionMode;
 export type PrismaRunStatus = $Enums.RunStatus;
+/** Canonical run-status alias across the run layer (one spelling, one union). */
+export type RunStatusValue = $Enums.RunStatus;
 export type ApprovalDecisionValue = $Enums.ApprovalDecision;
 export type JsonInput = Prisma.InputJsonValue;
 export type JsonValue = Prisma.JsonValue;
@@ -84,6 +86,8 @@ export type AgentRunRow = {
     branchName: string;
     status: PrismaRunStatus;
     activeIssueId: string | null;
+    /// Instant the worker first started executing (CP-D resume detection).
+    attemptedAt: Date | string | null;
     planVersion: number;
     owner: string | null;
     leaseExpiresAt: Date | string | null;
@@ -192,4 +196,60 @@ export const jsonRecord = (value: unknown): Record<string, unknown> => {
         for (const [key, entry] of Object.entries(value)) out[key] = entry;
     }
     return out;
+};
+
+// ---------------------------------------------------------------------------
+// Write boundary: domain patch -> Prisma AgentRun update data
+// ---------------------------------------------------------------------------
+
+/** The non-status columns a guarded transition may persist alongside the
+ *  status (plan version, pinned base commit, first-attempt stamp, publication
+ *  bookkeeping — CP-F). Declared explicitly so the write boundary stays typed:
+ *  `status` / `activeIssueId` are owned by the transition guard alone and
+ *  cannot be smuggled through a patch object. */
+export type RunCommitPatch = {
+    planVersion?: number;
+    baseCommit?: string | null;
+    branchName?: string;
+    attemptedAt?: Date | null;
+};
+
+/** Prisma `AgentRun` update data with the honest Json boundary: `options` is a
+ *  `Prisma.InputJsonValue` column, so a domain `Record<string, unknown>` must
+ *  go through `toJsonInput` instead of being cast. */
+export type RunUpdateData = {
+    status: PrismaRunStatus;
+    activeIssueId?: string | null;
+    planVersion?: number;
+    baseCommit?: string | null;
+    branchName?: string;
+    attemptedAt?: Date | null;
+};
+
+/** Total mapping from a domain transition patch to Prisma update data. The
+ *  status guard is mandatory — a mutation that does not say which status it
+ *  wrote is not a state-machine transition. */
+export const toRunUpdateData = (
+    status: RunStatusValue,
+    patch: RunCommitPatch & { activeIssueId?: string | null } = {}
+): RunUpdateData => {
+    const data: RunUpdateData = { status };
+    if ("activeIssueId" in patch) data.activeIssueId = patch.activeIssueId ?? null;
+    if (patch.planVersion !== undefined) data.planVersion = patch.planVersion;
+    if (patch.baseCommit !== undefined) data.baseCommit = patch.baseCommit;
+    if (patch.branchName !== undefined) data.branchName = patch.branchName;
+    if (patch.attemptedAt !== undefined) data.attemptedAt = patch.attemptedAt;
+    return data;
+};
+
+/** Read boundary for the generated enum: a status string from raw SQL or a
+ *  seeded mock either matches the generated union or the state machine refuses
+ *  to reason about it (there is no `as RunStatusValue` anywhere in this layer). */
+export const toRunStatusValue = (value: unknown): RunStatusValue => {
+    if (!isRunStatus(value)) {
+        throw new RunError("INVALID_INPUT", `Unknown run status: ${String(value)}`, {
+            status: value,
+        });
+    }
+    return value;
 };

@@ -222,3 +222,118 @@ export const latestRunEventSequence = async (runId: string): Promise<number> => 
     });
     return latest?.sequence ?? 0;
 };
+
+// ---------------------------------------------------------------------------
+// In-transaction appends (CP-A)
+// ---------------------------------------------------------------------------
+//
+// `appendRunEvent` allocates its sequence with a read + insert-and-retry loop,
+// which is correct standalone but cannot join a run-state transaction. The
+// helpers below append INSIDE a caller's transaction: the caller has already
+// locked the run row (`SELECT ... FOR UPDATE` in src/runs/stateMachine.ts), so
+// allocating `max(sequence) + n` here is race-free — any concurrent writer is
+// blocked on that same row lock until this transaction commits, and the unique
+// index on (runId, sequence) stays the last line of defence rather than the
+// primary guard.
+//
+// Realtime hints are deliberately NOT emitted from inside the transaction:
+// `appendRunEventsInTransaction` RETURNS hints and the transaction owner
+// publishes them after COMMIT, so a rollback can never leak a hint for an event
+// that does not exist.
+
+import type { Prisma } from "@repo/db/db";
+
+/** Transaction-scoped database handle: the global client or an interactive
+ *  transaction — both expose the same model delegates. */
+export type RunEventDb = Prisma.TransactionClient;
+
+export type RunEventDraft = {
+    type: RunEventType;
+    data?: Record<string, unknown>;
+};
+
+/** A durable event that has been persisted (or will be, when the enclosing
+ *  transaction commits) plus everything the realtime hint needs. */
+export type RunEventHint = AppendRunEventInput & { sequence: number };
+
+/** Highest allocated sequence for a run (0 when it has no events yet). */
+export const lastRunEventSequence = async (
+    db: RunEventDb,
+    runId: string
+): Promise<number> => {
+    const [latest] = await db.runEvent.findMany({
+        where: { runId },
+        orderBy: { sequence: "desc" },
+        take: 1,
+    });
+    return latest?.sequence ?? 0;
+};
+
+/**
+ * Append `drafts` to the run's log INSIDE the caller's transaction with
+ * contiguous sequences, and return the realtime hints to publish after commit.
+ * The caller must already hold the run's row lock (see stateMachine.ts): that
+ * is what makes the sequence allocation atomic, not the unique index.
+ */
+export const appendRunEventsInTransaction = async (
+    db: RunEventDb,
+    input: {
+        runId: string;
+        issueId?: string | null;
+        status?: string | null;
+        drafts: readonly RunEventDraft[];
+    }
+): Promise<RunEventHint[]> => {
+    if (input.drafts.length === 0) return [];
+    for (const draft of input.drafts) {
+        if (!isRunEventType(draft.type)) {
+            throw new RunError("INVALID_INPUT", `Unknown run event type: ${draft.type}`, {
+                type: draft.type,
+            });
+        }
+    }
+    const base = await lastRunEventSequence(db, input.runId);
+    const rows = input.drafts.map((draft, index) => ({
+        runId: input.runId,
+        sequence: base + index + 1,
+        type: draft.type,
+        data: toJsonInput(draft.data ?? {}),
+    }));
+    // One statement for the whole batch: the allocated sequences are either all
+    // persisted or (on rollback) none of them are.
+    await db.runEvent.createMany({ data: rows });
+    return rows.map((row, index) => ({
+        runId: row.runId,
+        type: row.type,
+        data: input.drafts[index]?.data,
+        issueId: input.issueId ?? null,
+        status: input.status ?? null,
+        sequence: row.sequence,
+    }));
+};
+
+/**
+ * Publish the realtime hints for events a transaction has just COMMITTED.
+ * Never call this inside the transaction — a client must not be able to see a
+ * hint for an event that was rolled back.
+ */
+export const publishRunEventHints = async (hints: readonly RunEventHint[]) => {
+    for (const hint of hints) {
+        if (hint.silent) continue;
+        const notifier = getRunEventPublisher();
+        for (const target of realtimeEventsFor(hint.type)) {
+            try {
+                await notifier({
+                    runId: hint.runId,
+                    issueId: hint.issueId ?? null,
+                    sequence: hint.sequence,
+                    status: hint.status ?? null,
+                    event: target.event,
+                });
+            } catch (error) {
+                // Never let a realtime hiccup undo a durable append.
+                console.error("Agent realtime notify failed:", error);
+            }
+        }
+    }
+};

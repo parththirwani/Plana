@@ -51,6 +51,9 @@ const RUN_ERROR_STATUS: Record<RunError["code"], number> = {
     STALE_APPROVAL: 409,
     ILLEGAL_TRANSITION: 409,
     TERMINAL_STATE: 409,
+    // A mutation whose acting worker no longer owns the run (its lease expired or
+    // its fencing token was superseded). 409: the caller's view is stale, not invalid.
+    STALE_CLAIM: 409,
     INTERNAL: 500,
 };
 
@@ -508,6 +511,10 @@ router.post(
 
             const run = await cancelRun({
                 runId: access.run.id,
+                // The status this handler read: a run that a worker advanced (or
+                // that already reached a terminal state) in between cannot be
+                // cancelled out from under that owner.
+                expectedFrom: access.run.status,
                 actorId: access.userId,
                 reason: parsedBody.data.reason,
             });

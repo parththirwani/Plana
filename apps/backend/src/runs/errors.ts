@@ -11,6 +11,7 @@ export const RUN_ERROR_CODES = [
     "TERMINAL_STATE",
     "ACTIVE_RUN_EXISTS",
     "STALE_APPROVAL",
+    "STALE_CLAIM",
     "UNSUPPORTED_CAPABILITY",
     "INTERNAL",
 ] as const;

@@ -550,10 +550,45 @@ const createPrismaMock = () => {
         runApproval: agents.runApproval,
         organizationAgentConfig: agents.organizationAgentConfig,
         agentJob: agents.agentJob,
-        $transaction: async (arg: any) =>
-            Array.isArray(arg)
-                ? await Promise.all(arg.map((op: any) => op))
-                : arg(prisma),
+        runLeaseRenewal: agents.runLeaseRenewal,
+        // ---------------------------------------------------------------------
+        // Transactions
+        // ---------------------------------------------------------------------
+        //
+        // The run state machine does its durability work in ONE interactive
+        // transaction (run row + events + slot + queued job), so the mock MUST
+        // share that semantics or it would bless exactly the bug the production
+        // code is designed to prevent: a launch whose enqueue failed has to
+        // leave NO run row, NO event and NO active slot behind here too, not just
+        // against a live Postgres.
+        $transaction: async (arg: any, _options?: any) => {
+            if (Array.isArray(arg)) {
+                return await Promise.all(arg.map((op: any) => op));
+            }
+            const snapshot = agents.snapshotAgentState();
+            try {
+                return await arg(prisma);
+            } catch (error) {
+                agents.restoreAgentState(snapshot);
+                throw error;
+            }
+        },
+        // ---------------------------------------------------------------------
+        // Row locks
+        // ---------------------------------------------------------------------
+        //
+        // `SELECT … FOR UPDATE` cannot block an in-memory mock, but the state
+        // machine must still exercise the SAME lock path here as against a live
+        // Postgres — so the two lock statements it issues are recognised and
+        // answered with the identical projection a real database would return.
+        // Any other statement is a hard error: a mock that quietly answers
+        // unknown SQL would "pass" tests whose queries never ran.
+        $queryRawUnsafe: async (sql: string, ...values: unknown[]) =>
+            queryRawRunLock(sql, values, agents),
+        $executeRawUnsafe: async (sql: string, ...values: unknown[]) =>
+            queryRawRunLock(sql, values, agents).then((rows) => rows.length),
+        $queryRaw: async (args: { sql?: string; values?: unknown[] }) =>
+            queryRawRunLock(String(args?.sql ?? ""), args?.values ?? [], agents),
     };
 
     return {
@@ -571,6 +606,70 @@ const createPrismaMock = () => {
             idSeq = 0;
         },
     };
+};
+
+/**
+ * Recognise the two `SELECT … FOR UPDATE` statements the run state machine
+ * issues (lock the ISSUE's active-run row for admission; lock a RUN row for a
+ * guarded transition) and return the same column projection a real Postgres
+ * would. Unknown SQL throws instead of returning `[]`: an in-memory mock that
+ * silently accepted arbitrary statements would let a test pass whose query never
+ * actually ran.
+ */
+const LOCK_ISSUE_SLOT_MARKER = `WHERE "activeIssueId" = $1 FOR UPDATE`;
+// The advisory admission lock reserves nothing here (single-threaded mock), but
+// it must be RECOGNISED: throwing on unknown SQL is the discipline that keeps a
+// test from passing without running its statement, so new statements get named
+// here rather than silently tolerated.
+const LOCK_ISSUE_ADMISSION_MARKER = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0)) IS NULL`;
+const LOCK_RUN_ROW_MARKER = `WHERE "id" = $1 FOR UPDATE`;
+
+export const RUN_LOCK_COLUMNS = [
+    "id",
+    "issueId",
+    "organizationId",
+    "status",
+    "activeIssueId",
+    "planVersion",
+    "baseCommit",
+    "branchName",
+    "owner",
+    "leaseExpiresAt",
+    "fencingToken",
+    "attemptedAt",
+] as const;
+
+const projectRunLockRow = (run: Record<string, unknown>) =>
+    Object.fromEntries(
+        RUN_LOCK_COLUMNS.filter((column) => column in run).map((column) => [
+            column,
+            run[column],
+        ])
+    );
+
+const queryRawRunLock = (
+    sql: string,
+    values: readonly unknown[],
+    agents: any
+): Promise<any[]> => {
+    const statement = sql.replace(/\s+/g, " ").trim();
+    const first = values[0];
+    if (statement.includes(LOCK_ISSUE_ADMISSION_MARKER)) {
+        return Promise.resolve([]);
+    }
+    if (statement.includes(LOCK_ISSUE_SLOT_MARKER)) {
+        return Promise.resolve(
+            agents.lockedRunRows(String(first)).map(projectRunLockRow)
+        );
+    }
+    if (statement.includes(LOCK_RUN_ROW_MARKER)) {
+        return Promise.resolve(
+            agents.lockedRunRows(undefined, String(first)).map(projectRunLockRow)
+        );
+    }
+    throw new Error(
+        `prismaMock: unsupported raw statement: ${statement.slice(0, 160)}`
+    );
 };
 
 export const prismaMock = createPrismaMock();
