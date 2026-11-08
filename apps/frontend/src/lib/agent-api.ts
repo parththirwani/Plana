@@ -13,7 +13,12 @@ export const getAgentPolicy = (orgId: string) =>
 export const saveAgentPolicy = (orgId: string, config: AgentConfig) =>
   request<{ config: AgentConfig }>(`/organizations/${orgId}/agent-config`, {
     method: "PUT",
-    body: config,
+    body: {
+      allowedRepositories: config.allowedRepositories,
+      defaultEngine: config.defaultEngine,
+      defaultModel: config.defaultModel,
+      defaultExecutionMode: config.defaultExecutionMode,
+    },
   });
 export const getAgentCapabilities = (issueId: string) =>
   request<AgentCapabilities>(`/issues/${issueId}/agent-runs/capabilities`);

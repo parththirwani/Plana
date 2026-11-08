@@ -69,9 +69,16 @@ Rechecked on 2026-11-08 after adding this UI:
 
 - Backend generated-client typecheck passes; unit/API suite **284 pass, 0 fail**.
 - Five added API regressions cover team policy visibility, outsider/member restrictions, invalid default pairs, saved defaults in capabilities, and clearing defaults.
-- Frontend typecheck passes; **10 component/selection tests pass**. These use server-rendered components and capability fixtures. They cover role-specific controls, supported selections, plan visibility, persisted sandbox phases, and final-run restrictions. They are not an interactive browser end-to-end proof.
+- Frontend typecheck passes; **11 component/selection tests pass**. These use server-rendered components and capability fixtures. They cover role-specific controls, supported selections, plan visibility, persisted sandbox phases, and final-run restrictions. They are not an interactive browser end-to-end proof.
 - Frontend production build passes. ESLint on every changed/new frontend TypeScript file passes. Full lint retains the original two Prettier errors and nine warnings.
 - All eight migrations apply to a fresh `plana_ui_test` PostgreSQL database. The two integration suites still pass **5 + 14 tests**, including real process boundaries. WebSocket suite remains **19 pass, 0 fail**.
 - CI now also runs frontend typechecking, the component/selection tests, and a production build.
 
 Engine execution is still simulated. Real E2B provisioning, real provider model calls, real GitHub publication, metering/budget enforcement, and the message composition UI remain incomplete. A launch button does not claim those integrations exist.
+
+
+### Recorded product walkthrough
+
+A manual browser walkthrough of the product UI used Vite, the actual Express API and durable worker, a fresh PostgreSQL database, and the existing fake adapters. It confirmed saving a Claude Code team default, overriding it with Pi on a card, provisioning/pause, member-only plan viewing without operation controls, read-only member team settings, admin approval, completion, and persisted cleanup. Demo-only delays made transitions visible. No real sandbox or provider call was made.
+
+This caught a request-shape bug that static component tests did not: policy rows include database metadata and budget fields, while the update API accepts a strict editable-field schema. The client now serializes only the approved repository list and default engine/model/mode. A regression test passes a full loaded policy row and checks the exact outgoing request body.

@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { saveAgentPolicy } from "../src/lib/agent-api";
+import { describe, expect, test, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactNode } from "react";
@@ -225,4 +226,35 @@ describe("plan review controls", () => {
     expect(html).not.toContain("Resume run");
     expect(html).not.toContain("Approve and implement");
   });
+});
+
+test("saving a policy read from the server strips database metadata from the strict PUT body", async () => {
+  const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
+    new Response(JSON.stringify({ message: "Agent policy saved", config: {} }), { status: 200 }),
+  );
+  try {
+    const loaded = {
+      id: "policy-row",
+      organizationId: "org",
+      createdAt: "2026-11-08T00:00:00Z",
+      updatedAt: "2026-11-08T00:00:00Z",
+      runBudgetUsd: 5,
+      dailyOrgBudgetUsd: 25,
+      allowedRepositories: ["team/web"],
+      defaultEngine: "CODEX" as const,
+      defaultModel: "gpt-5",
+      defaultExecutionMode: "PLAN_AND_APPROVE" as const,
+    };
+    await saveAgentPolicy("org", loaded);
+    expect(fetchSpy.mock.calls[0]?.[0]).toBe("/api/v1/organizations/org/agent-config");
+    const body = JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({
+      allowedRepositories: ["team/web"],
+      defaultEngine: "CODEX",
+      defaultModel: "gpt-5",
+      defaultExecutionMode: "PLAN_AND_APPROVE",
+    });
+  } finally {
+    fetchSpy.mockRestore();
+  }
 });
